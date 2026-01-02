@@ -14,7 +14,10 @@ use schema::{
     compute_binary_identity, compute_binary_identity_with_env, ClaimsFile, EnvSnapshot,
     RegenerationReport, ValidationReport,
 };
-use validate::{option_from_claim_id, validate_option_existence, validation_env};
+use validate::{
+    option_from_binding_claim_id, option_from_claim_id, validate_option_binding,
+    validate_option_existence, validation_env,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "bvm", version, about = "Binary-validated man page generator")]
@@ -224,6 +227,9 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
     for claim in claims.claims {
         if let Some(option) = option_from_claim_id(&claim.id) {
             let result = validate_option_existence(&args.binary, &claim.id, &option, &env);
+            results.push(result);
+        } else if option_from_binding_claim_id(&claim.id).is_some() {
+            let result = validate_option_binding(&args.binary, &claim, &env);
             results.push(result);
         }
     }

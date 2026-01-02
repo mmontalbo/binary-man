@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 const EXTRACTOR_HELP_V0: &str = "parse:help:v0";
 const CONFIDENCE_EXISTS: f32 = 0.9;
-const CONFIDENCE_ARITY_REQUIRED: f32 = 0.7;
-const CONFIDENCE_ARITY_OPTIONAL: f32 = 0.6;
+const CONFIDENCE_BINDING_REQUIRED: f32 = 0.7;
+const CONFIDENCE_BINDING_OPTIONAL: f32 = 0.6;
 
 #[derive(Debug, Clone)]
 struct OptionToken {
@@ -20,7 +20,7 @@ enum ArgForm {
     Optional(String),
 }
 
-/// Parse help output into option existence and explicit arity claims.
+/// Parse help output into option existence and explicit parameter binding claims.
 ///
 /// Recognizes `--long`, `-s`, `--opt=ARG`, and `--opt[=ARG]` forms and produces
 /// stable claim IDs like `claim:option:opt=--all:exists`.
@@ -65,29 +65,27 @@ pub fn parse_help_text(source_path: &str, content: &str) -> Vec<Claim> {
             });
 
         if let Some(arg_form) = arg_form {
-            let (form_text, confidence, qualifier, article) = match &arg_form {
+            let (form_text, confidence, qualifier) = match &arg_form {
                 ArgForm::Required(arg) => (
                     format!("{}={}", canonical.opt, arg),
-                    CONFIDENCE_ARITY_REQUIRED,
-                    "required",
-                    "a",
+                    CONFIDENCE_BINDING_REQUIRED,
+                    "requires a value",
                 ),
                 ArgForm::Optional(arg) => (
                     format!("{}[={}]", canonical.opt, arg),
-                    CONFIDENCE_ARITY_OPTIONAL,
-                    "optional",
-                    "an",
+                    CONFIDENCE_BINDING_OPTIONAL,
+                    "accepts an optional value",
                 ),
             };
 
-            let arity_id = format!("claim:option:opt={}:arity", canonical.opt);
+            let binding_id = format!("claim:option:opt={}:binding", canonical.opt);
             claims_by_id
-                .entry(arity_id.clone())
+                .entry(binding_id.clone())
                 .or_insert_with(|| Claim {
-                    id: arity_id,
+                    id: binding_id,
                     text: format!(
-                        "Option {} accepts {} {} argument in `{}` form.",
-                        canonical.opt, article, qualifier, form_text
+                        "Option {} {} in `{}` form.",
+                        canonical.opt, qualifier, form_text
                     ),
                     kind: ClaimKind::Option,
                     source: source.clone(),
@@ -267,15 +265,15 @@ mod tests {
             "claim:option:opt=--all:exists",
             "claim:option:opt=--almost-all:exists",
             "claim:option:opt=--author:exists",
-            "claim:option:opt=--block-size:arity",
+            "claim:option:opt=--block-size:binding",
             "claim:option:opt=--block-size:exists",
-            "claim:option:opt=--color:arity",
+            "claim:option:opt=--color:binding",
             "claim:option:opt=--color:exists",
             "claim:option:opt=--dereference:exists",
             "claim:option:opt=--ignore-backups:exists",
-            "claim:option:opt=--ignore:arity",
+            "claim:option:opt=--ignore:binding",
             "claim:option:opt=--ignore:exists",
-            "claim:option:opt=--tabsize:arity",
+            "claim:option:opt=--tabsize:binding",
             "claim:option:opt=--tabsize:exists",
             "claim:option:opt=-i:exists",
         ]

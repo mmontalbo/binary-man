@@ -46,8 +46,8 @@
       "confidence": 0.9
     },
     {
-      "id": "claim:option:opt=--block-size:arity",
-      "text": "Option --block-size accepts a required argument in `--block-size=SIZE` form.",
+      "id": "claim:option:opt=--block-size:binding",
+      "text": "Option --block-size requires a value in `--block-size=SIZE` form.",
       "kind": "option",
       "source": {
         "type": "help",
@@ -74,8 +74,8 @@
       "confidence": 0.9
     },
     {
-      "id": "claim:option:opt=--color:arity",
-      "text": "Option --color accepts an optional argument in `--color[=WHEN]` form.",
+      "id": "claim:option:opt=--color:binding",
+      "text": "Option --color accepts an optional value in `--color[=WHEN]` form.",
       "kind": "option",
       "source": {
         "type": "help",
@@ -130,8 +130,8 @@
       "confidence": 0.9
     },
     {
-      "id": "claim:option:opt=--ignore:arity",
-      "text": "Option --ignore accepts a required argument in `--ignore=PATTERN` form.",
+      "id": "claim:option:opt=--ignore:binding",
+      "text": "Option --ignore requires a value in `--ignore=PATTERN` form.",
       "kind": "option",
       "source": {
         "type": "help",
@@ -158,8 +158,8 @@
       "confidence": 0.9
     },
     {
-      "id": "claim:option:opt=--tabsize:arity",
-      "text": "Option --tabsize accepts a required argument in `--tabsize=COLS` form.",
+      "id": "claim:option:opt=--tabsize:binding",
+      "text": "Option --tabsize requires a value in `--tabsize=COLS` form.",
       "kind": "option",
       "source": {
         "type": "help",

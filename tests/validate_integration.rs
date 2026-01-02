@@ -75,4 +75,10 @@ fn validates_ls_all_option_when_help_is_available() {
         .expect("status string");
 
     assert_eq!(status, "confirmed");
+
+    let has_binding = results.iter().any(|value| {
+        value.get("claim_id").and_then(|value| value.as_str())
+            == Some("claim:option:opt=--block-size:binding")
+    });
+    assert!(has_binding, "expected --block-size binding result");
 }
