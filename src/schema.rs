@@ -1,3 +1,5 @@
+//! Schema types for claims, evidence, and reports.
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -148,6 +150,7 @@ pub struct RegenerationReport {
     pub out_man: PathBuf,
 }
 
+/// Compute binary identity using environment variables from the current process.
 pub fn compute_binary_identity(path: &Path) -> Result<BinaryIdentity> {
     let env = EnvSnapshot {
         locale: env_or_unset(&["LC_ALL", "LC_CTYPE", "LANG"]),
@@ -157,6 +160,7 @@ pub fn compute_binary_identity(path: &Path) -> Result<BinaryIdentity> {
     compute_binary_identity_with_env(path, env)
 }
 
+/// Compute binary identity using a provided environment snapshot.
 pub fn compute_binary_identity_with_env(path: &Path, env: EnvSnapshot) -> Result<BinaryIdentity> {
     let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let bytes = std::fs::read(&abs_path)?;

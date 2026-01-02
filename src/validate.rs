@@ -1,3 +1,5 @@
+//! Validation helpers for surface-level option existence claims.
+
 use crate::schema::{
     Determinism, EnvSnapshot, Evidence, ValidationMethod, ValidationResult, ValidationStatus,
 };
@@ -38,6 +40,7 @@ struct ExecutionAttempt {
     spawn_error: Option<String>,
 }
 
+/// Default validation environment (LC_ALL=C, TZ=UTC, TERM=dumb).
 pub fn validation_env() -> EnvSnapshot {
     EnvSnapshot {
         locale: "C".to_string(),
@@ -46,6 +49,7 @@ pub fn validation_env() -> EnvSnapshot {
     }
 }
 
+/// Extract the canonical option token from an option existence claim ID.
 pub fn option_from_claim_id(id: &str) -> Option<String> {
     const PREFIX: &str = "claim:option:opt=";
     const SUFFIX: &str = ":exists";
@@ -60,6 +64,7 @@ pub fn option_from_claim_id(id: &str) -> Option<String> {
     }
 }
 
+/// Execute a harmless invocation and classify the option existence claim.
 pub fn validate_option_existence(
     binary: &Path,
     claim_id: &str,

@@ -59,8 +59,8 @@ records a failure to capture help output; in that case, `claims` may be empty.
   "args": ["--long"],
   "env": { "LC_ALL": "C", "TZ": "UTC" },
   "exit_code": 0,
-  "stdout": "hash:blake3:...",
-  "stderr": "hash:blake3:...",
+  "stdout": "blake3:...",
+  "stderr": "blake3:...",
   "notes": "string"
 }
 ```

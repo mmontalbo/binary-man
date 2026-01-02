@@ -1,3 +1,5 @@
+//! Help-text parsing into surface-level option claims.
+
 use crate::schema::{Claim, ClaimKind, ClaimSource, ClaimSourceType, ClaimStatus};
 use std::collections::BTreeMap;
 
@@ -18,6 +20,10 @@ enum ArgForm {
     Optional(String),
 }
 
+/// Parse help output into option existence and explicit arity claims.
+///
+/// Recognizes `--long`, `-s`, `--opt=ARG`, and `--opt[=ARG]` forms and produces
+/// stable claim IDs like `claim:option:opt=--all:exists`.
 pub fn parse_help_text(source_path: &str, content: &str) -> Vec<Claim> {
     let mut claims_by_id: BTreeMap<String, Claim> = BTreeMap::new();
     let path_str = source_path.to_string();
