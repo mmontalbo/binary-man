@@ -3,6 +3,8 @@
 This document records the current milestone plan and status. It is the canonical
 sequence for the project.
 
+Current focus: M3 — Minimal Regeneration.
+
 ## M0 — Scaffold & Invariants (done)
 
 Goal: Make the project reproducible and lock epistemic rules before any validation logic.
@@ -54,7 +56,7 @@ Deferred:
 - Behavior validation.
 - Man page generation.
 
-## M2.5 — Tier-1 Parameter Binding Validation
+## M2.5 — Tier-1 Parameter Binding Validation (done)
 
 Goal: Validate only what the docs explicitly claim about parameter binding.
 
@@ -66,7 +68,7 @@ Scope:
 Deliverable:
 - Extended ValidationReport with Tier-1 parameter binding results.
 
-## M3 — Minimal Regeneration
+## M3 — Minimal Regeneration (current)
 
 Goal: Prove the pipeline can emit a truthful doc artifact.
 
