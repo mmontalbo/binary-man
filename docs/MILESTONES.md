@@ -27,7 +27,7 @@ Goal: Turn documentation into auditable, deterministic surface claims.
 What landed:
 - Conservative --help parser.
 - Canonical option IDs (prefer long options).
-- Separate claims for option existence and explicit argument arity (=ARG, [=ARG] only).
+- Separate claims for option existence and explicit parameter binding (Tier 1) from syntax (=ARG, [=ARG] only).
 - Full audit fields (extractor, raw_excerpt, source).
 - Golden snapshot test for ls --help.
 
@@ -50,21 +50,21 @@ Deliverable:
 - ValidationReport tied to a concrete BinaryIdentity.
 
 Deferred:
-- Arity validation.
+- Tier-1 parameter binding validation.
 - Behavior validation.
 - Man page generation.
 
-## M2.5 — Surface Validation: Explicit Arity
+## M2.5 — Tier-1 Parameter Binding Validation
 
-Goal: Validate only what the docs explicitly claim about argument syntax.
+Goal: Validate only what the docs explicitly claim about parameter binding.
 
 Scope:
-- Validate claim:option:*:arity where syntax is explicit.
-- Required vs optional args only.
+- Validate Tier-1 parameter binding claims where syntax is explicit.
+- Required vs optional values only.
 - Still no semantics.
 
 Deliverable:
-- Extended ValidationReport with arity results.
+- Extended ValidationReport with Tier-1 parameter binding results.
 
 ## M3 — Minimal Regeneration
 
@@ -72,9 +72,9 @@ Goal: Prove the pipeline can emit a truthful doc artifact.
 
 Scope:
 - Generate a minimal man page that includes:
-  - Confirmed options
-  - Refuted options (flagged)
-  - Undetermined options (explicitly listed)
+  - Confirmed T0/T1 claims (option existence + parameter binding)
+  - Refuted T0/T1 claims (flagged)
+  - Undetermined T0/T1 claims (explicitly listed)
 - Include binary hash/version header.
 - Intentionally barebones.
 
@@ -84,11 +84,11 @@ Goal: Make “comprehensive” measurable, not aspirational.
 
 Deliverable:
 - Coverage report:
+  - Coverage per tier (T0/T1): % confirmed and % undetermined
   - % option existence confirmed
-  - % arity confirmed
-  - counts of undetermined claims
+  - % Tier-1 parameter binding confirmed
 - Stop when:
-  - surface completeness achieved
+  - T0/T1 surface completeness achieved
   - remaining gaps explicitly documented
 
 ## M5 — Selective Behavior Validation

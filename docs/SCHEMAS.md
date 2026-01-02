@@ -8,6 +8,33 @@ These schemas define the minimal, audit-friendly data exchanged between pipeline
 - Claims are not truth. They are unvalidated assertions until tested against the binary.
 - Unknowns are first-class: use `undetermined` when evidence is insufficient.
 
+## Parameter Surface Tiers
+
+Option parameters are evaluated as a tiered surface:
+
+- T0: Option existence.
+- T1: Parameter binding (required vs optional value).
+- T2: Parameter form (attachment style, repeatability).
+- T3: Parameter domain/type (enum, numeric, path-like).
+- T4: Behavioral semantics.
+
+Only T0 and T1 are in scope today. Higher tiers may remain not evaluated indefinitely.
+
+Large parameter spaces are accounted for via coverage reporting and explicit unknowns, not by
+exhaustive enumeration.
+
+## Environment Contract
+
+Validation is tied to a controlled execution contract:
+
+- LC_ALL=C
+- TZ=UTC
+- TERM=dumb
+- temp fs fixtures (when required)
+
+Results are valid only under this contract. If behavior appears environment-sensitive, it should
+be classified as `undetermined`.
+
 ## BinaryIdentity
 
 ```json
