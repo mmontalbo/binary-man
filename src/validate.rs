@@ -1,8 +1,45 @@
 //! Validation helpers for surface-level option claims.
+//!
+//! Validation is intentionally conservative: it runs bounded, low-impact probes
+//! and relies on explicit error markers rather than exit status alone.
+//!
+//! ## Pipeline summary
+//! - **Existence**: run `<opt> --help` and look for unrecognized/ambiguous markers.
+//! - **Binding**: run missing-arg and with-arg probes and compare responses.
+//! - **Evidence**: store hashed stdout/stderr plus marker notes.
+//!
+//! ## Example walkthroughs
+//! Existence claim (`--all`) confirmed when no unrecognized marker is present:
+//! ```text
+//! $ tool --all --help
+//! (exit 0, no "unrecognized option" marker)
+//! -> confirmed
+//! ```
+//! Existence claim (`--nope`) refuted when the error mentions the option:
+//! ```text
+//! $ tool --nope --help
+//! error: unrecognized option '--nope'
+//! -> refuted
+//! ```
+//! Required binding confirmed by missing-arg response:
+//! ```text
+//! $ tool --size --help
+//! option '--size' requires an argument
+//! $ tool --size __bvm__ --help
+//! (no missing-arg error)
+//! -> confirmed (required)
+//! ```
+//! Optional binding confirmed when missing-arg is OK but invalid arg is rejected:
+//! ```text
+//! $ tool --color --help
+//! (exit 0)
+//! $ tool --color __bvm__ --help
+//! invalid argument '__bvm__' for '--color'
+//! -> confirmed (optional)
+//! ```
 
 use crate::schema::{
-    Claim, Determinism, EnvSnapshot, Evidence, ValidationMethod, ValidationResult,
-    ValidationStatus,
+    Claim, Determinism, EnvSnapshot, Evidence, ValidationMethod, ValidationResult, ValidationStatus,
 };
 use regex::Regex;
 use std::collections::BTreeMap;
@@ -95,7 +132,7 @@ struct AttemptAnalysis {
     notes: Vec<String>,
 }
 
-/// Default validation environment (LC_ALL=C, TZ=UTC, TERM=dumb).
+/// Default validation environment (`LC_ALL=C`, `TZ=UTC`, `TERM=dumb`).
 pub fn validation_env() -> EnvSnapshot {
     EnvSnapshot {
         locale: "C".to_string(),
@@ -105,6 +142,16 @@ pub fn validation_env() -> EnvSnapshot {
 }
 
 /// Extract the canonical option token from an option existence claim ID.
+///
+/// # Examples
+/// ```ignore
+/// use crate::validate::option_from_claim_id;
+/// assert_eq!(
+///     option_from_claim_id("claim:option:opt=--all:exists"),
+///     Some("--all".to_string())
+/// );
+/// assert_eq!(option_from_claim_id("claim:option:opt=--all:binding"), None);
+/// ```
 pub fn option_from_claim_id(id: &str) -> Option<String> {
     const PREFIX: &str = "claim:option:opt=";
     const SUFFIX: &str = ":exists";
@@ -120,6 +167,16 @@ pub fn option_from_claim_id(id: &str) -> Option<String> {
 }
 
 /// Extract the canonical option token from a parameter binding claim ID.
+///
+/// # Examples
+/// ```ignore
+/// use crate::validate::option_from_binding_claim_id;
+/// assert_eq!(
+///     option_from_binding_claim_id("claim:option:opt=--size:binding"),
+///     Some("--size".to_string())
+/// );
+/// assert_eq!(option_from_binding_claim_id("claim:option:opt=--size:exists"), None);
+/// ```
 pub fn option_from_binding_claim_id(id: &str) -> Option<String> {
     const PREFIX: &str = "claim:option:opt=";
     const SUFFIX: &str = ":binding";
@@ -135,6 +192,18 @@ pub fn option_from_binding_claim_id(id: &str) -> Option<String> {
 }
 
 /// Execute a harmless invocation and classify the option existence claim.
+///
+/// The probe always appends `--help` to minimize side effects.
+///
+/// # Examples
+/// ```ignore
+/// # use crate::validate::validate_option_existence;
+/// # use crate::validate::validation_env;
+/// # use std::path::Path;
+/// let env = validation_env();
+/// let result = validate_option_existence(Path::new("tool"), "claim:option:opt=--all:exists", "--all", &env);
+/// assert!(matches!(result.status, crate::schema::ValidationStatus::Confirmed | crate::schema::ValidationStatus::Undetermined));
+/// ```
 pub fn validate_option_existence(
     binary: &Path,
     claim_id: &str,
@@ -189,7 +258,36 @@ pub fn validate_option_existence(
 }
 
 /// Execute controlled invocations and classify the parameter binding claim.
-pub fn validate_option_binding(binary: &Path, claim: &Claim, env: &EnvSnapshot) -> ValidationResult {
+///
+/// The validator runs two probes:
+/// - **Missing arg**: `<opt> --help`
+/// - **With arg**: `<opt> __bvm__ --help` (or `--opt=__bvm__` when attached)
+///
+/// # Examples
+/// ```ignore
+/// # use crate::validate::validate_option_binding;
+/// # use crate::validate::validation_env;
+/// # use crate::schema::Claim;
+/// # use std::path::Path;
+/// let env = validation_env();
+/// let claim = Claim {
+///     id: "claim:option:opt=--size:binding".to_string(),
+///     text: "Option --size requires a value in `--size=SIZE` form.".to_string(),
+///     kind: crate::schema::ClaimKind::Option,
+///     source: crate::schema::ClaimSource { source_type: crate::schema::ClaimSourceType::Help, path: "<captured:--help>".to_string(), line: None },
+///     status: crate::schema::ClaimStatus::Unvalidated,
+///     extractor: "parse:help:v1".to_string(),
+///     raw_excerpt: "--size=SIZE".to_string(),
+///     confidence: Some(0.7),
+/// };
+/// let result = validate_option_binding(Path::new("tool"), &claim, &env);
+/// assert!(matches!(result.status, crate::schema::ValidationStatus::Confirmed | crate::schema::ValidationStatus::Undetermined | crate::schema::ValidationStatus::Refuted));
+/// ```
+pub fn validate_option_binding(
+    binary: &Path,
+    claim: &Claim,
+    env: &EnvSnapshot,
+) -> ValidationResult {
     let Some(spec) = binding_spec_from_claim(claim) else {
         return ValidationResult {
             claim_id: claim.id.clone(),
@@ -212,7 +310,9 @@ pub fn validate_option_binding(binary: &Path, claim: &Claim, env: &EnvSnapshot) 
     let with_arg_analysis = analyze_binding_attempt(&spec.option, &with_arg_attempt);
 
     let (status, reason) = match spec.expectation {
-        Some(expectation) => classify_binding_attempts(expectation, &missing_analysis, &with_arg_analysis),
+        Some(expectation) => {
+            classify_binding_attempts(expectation, &missing_analysis, &with_arg_analysis)
+        }
         None => (
             ValidationStatus::Undetermined,
             Some("parameter binding expectation missing".to_string()),
@@ -630,10 +730,8 @@ fn extract_missing_argument_options(output: &str) -> Vec<String> {
         options.push(cleaned);
     }
 
-    let missing = Regex::new(
-        r#"(?i)missing\s+(?:argument|value)\s+for\s+['"`]?([^\s'"`]+)['"`]?"#,
-    )
-    .expect("regex for missing argument errors");
+    let missing = Regex::new(r#"(?i)missing\s+(?:argument|value)\s+for\s+['"`]?([^\s'"`]+)['"`]?"#)
+        .expect("regex for missing argument errors");
     for cap in missing.captures_iter(output) {
         let token = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
         let cleaned = clean_option_token(token);
@@ -685,10 +783,9 @@ fn extract_argument_not_allowed_options(output: &str) -> Vec<String> {
         options.push(cleaned);
     }
 
-    let takes_no = Regex::new(
-        r#"(?i)option\s+['"`]?([^\s'"`]+)['"`]?\s+takes?\s+no\s+(?:argument|value)"#,
-    )
-    .expect("regex for takes no argument errors");
+    let takes_no =
+        Regex::new(r#"(?i)option\s+['"`]?([^\s'"`]+)['"`]?\s+takes?\s+no\s+(?:argument|value)"#)
+            .expect("regex for takes no argument errors");
     for cap in takes_no.captures_iter(output) {
         let token = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
         let cleaned = clean_option_token(token);
@@ -698,10 +795,9 @@ fn extract_argument_not_allowed_options(output: &str) -> Vec<String> {
         options.push(cleaned);
     }
 
-    let not_allowed = Regex::new(
-        r#"(?i)(?:argument|value)\s+not\s+allowed\s+for\s+['"`]?([^\s'"`]+)['"`]?"#,
-    )
-    .expect("regex for argument not allowed for option errors");
+    let not_allowed =
+        Regex::new(r#"(?i)(?:argument|value)\s+not\s+allowed\s+for\s+['"`]?([^\s'"`]+)['"`]?"#)
+            .expect("regex for argument not allowed for option errors");
     for cap in not_allowed.captures_iter(output) {
         let token = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
         let cleaned = clean_option_token(token);
