@@ -3,17 +3,26 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          config = { allowUnfree = true; };
+        };
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
+          config = { allowUnfree = true; };
+        };
+        claudePkg = if pkgs ? claude-code then pkgs.claude-code else pkgsUnstable.claude-code;
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
+          packages = [ claudePkg ] ++ (with pkgs; [
             rustc
             cargo
             rustfmt
@@ -26,8 +35,8 @@
             man-db
             groff
             coreutils
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            strace
+          ]) ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.strace
           ];
           shellHook = ''
             export RUST_BACKTRACE=1
