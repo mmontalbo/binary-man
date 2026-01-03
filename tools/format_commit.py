@@ -6,7 +6,6 @@ Usage:
         --context "why this commit exists" \
         --enable "capability enabled" \
         --change "path: what + why" \
-        --deferred "deferred work" \
         [--context "additional context line"] \
         [--enable "capability enabled"] \
         [--change "path: what + why"] \
@@ -58,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deferred",
         action="append",
-        required=True,
+        default=[],
         metavar="TEXT",
         help="deferred follow-up work (repeatable)",
     )
@@ -226,12 +225,11 @@ def format_message(
         item_lines[0] = f"{label}: {description}"
         change_lines.extend(_format_bullet_lines(item_lines))
 
-    if not deferred:
-        raise ValueError("at least one --deferred entry is required")
     deferred_lines = []
-    for item in deferred:
-        item_lines = _split_item_lines(item, "--deferred entry")
-        deferred_lines.extend(_format_bullet_lines(item_lines))
+    if deferred:
+        for item in deferred:
+            item_lines = _split_item_lines(item, "--deferred entry")
+            deferred_lines.extend(_format_bullet_lines(item_lines))
 
     lines = [subject, "", "Context:"]
     lines.extend(context_lines)
@@ -239,8 +237,9 @@ def format_message(
     lines.extend(enable_lines)
     lines.extend(["", "Changes (by file):"])
     lines.extend(change_lines)
-    lines.extend(["", "Deferred:"])
-    lines.extend(deferred_lines)
+    if deferred_lines:
+        lines.extend(["", "Deferred:"])
+        lines.extend(deferred_lines)
     return "\n".join(lines) + "\n"
 
 

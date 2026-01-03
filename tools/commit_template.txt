@@ -10,11 +10,12 @@ Changes (by file):
 - path/to/file: what + why in one line
   optional continuation line for detail
 
-Deferred:
+Deferred (optional):
 - deferred follow-up work
 
 # tools/format_commit.py can be used to generate a compliant message and
 # tools/lint_commit.py validates an existing message.
 #
 # Replace the placeholder bullets with concrete notes before saving.
+# Omit the Deferred section entirely when nothing is pending.
 # Keep a single blank line between sections.

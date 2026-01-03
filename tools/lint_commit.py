@@ -118,22 +118,24 @@ def lint_message(text: str) -> int:
     if len(lines) < 3 or lines[1] != "":
         return fail("expected blank line after subject")
 
-    headers = [
+    required_headers = [
         ("Context:", _validate_context_section),
         ("What this enables:", lambda lines: _validate_bullet_section(lines, "What this enables")),
         (
             "Changes (by file):",
             lambda lines: _validate_bullet_section(lines, "Changes", require_colon=True),
         ),
-        ("Deferred:", lambda lines: _validate_bullet_section(lines, "Deferred")),
     ]
+    deferred_header = ("Deferred:", lambda lines: _validate_bullet_section(lines, "Deferred"))
 
     idx = 2
-    for i, (header, validator) in enumerate(headers):
+    for i, (header, validator) in enumerate(required_headers):
         if idx >= len(lines) or lines[idx] != header:
             return fail(f"expected '{header}' section header")
         idx += 1
-        next_header = headers[i + 1][0] if i + 1 < len(headers) else None
+        next_header = (
+            required_headers[i + 1][0] if i + 1 < len(required_headers) else None
+        )
         if next_header:
             try:
                 next_idx = lines.index(next_header, idx)
@@ -145,12 +147,35 @@ def lint_message(text: str) -> int:
                 return fail("expected single blank line between sections")
             idx = next_idx
         else:
-            section_lines = lines[idx:]
-            idx = len(lines)
+            try:
+                next_idx = lines.index(deferred_header[0], idx)
+            except ValueError:
+                next_idx = None
+            if next_idx is None:
+                section_lines = lines[idx:]
+                idx = len(lines)
+            else:
+                section_lines = lines[idx:next_idx]
+                section_lines, separator_blanks = _strip_trailing_section_blanks(section_lines)
+                if separator_blanks != 1:
+                    return fail("expected single blank line between sections")
+                idx = next_idx
 
         if not section_lines:
             return fail(f"{header} section must not be empty")
 
+        error = validator(section_lines)
+        if error:
+            return fail(error)
+
+    if idx < len(lines):
+        header, validator = deferred_header
+        if lines[idx] != header:
+            return fail(f"expected '{header}' section header")
+        idx += 1
+        section_lines = lines[idx:]
+        if not section_lines:
+            return fail(f"{header} section must not be empty")
         error = validator(section_lines)
         if error:
             return fail(error)
