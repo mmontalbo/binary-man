@@ -34,9 +34,8 @@ pub struct EnvSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimsFile {
-    pub binary_identity: Option<BinaryIdentity>,
-    pub invocation: Option<String>,
-    pub capture_error: Option<String>,
+    pub invoked_path: PathBuf,
+    pub binary_identity: BinaryIdentity,
     pub claims: Vec<Claim>,
 }
 
@@ -74,9 +73,7 @@ pub struct ClaimSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimSourceType {
-    Man,
     Help,
-    Source,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

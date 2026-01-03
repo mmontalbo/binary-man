@@ -7,6 +7,7 @@ These schemas define the minimal, audit-friendly data exchanged between pipeline
 - Claim extraction is heuristic. Every claim must record its `extractor` and a `raw_excerpt` for auditability.
 - Claims are not truth. They are unvalidated assertions until tested against the binary.
 - Unknowns are first-class: use `undetermined` when evidence is insufficient.
+- Rendered views treat validation results as authoritative; unvalidated claims default to `undetermined`.
 - The goal is accounting and honesty, not completeness.
 
 ## Conceptual Model
@@ -70,9 +71,9 @@ be classified as `undetermined`.
   "id": "string",
   "text": "string",
   "kind": "option|behavior|env|io|error|exit_status",
-  "source": { "type": "man|help|source", "path": "string", "line": 0 },
+  "source": { "type": "help", "path": "string", "line": 0 },
   "status": "unvalidated",
-  "extractor": "parse:man:v0",
+  "extractor": "parse:help:v1",
   "raw_excerpt": "string",
   "confidence": 0.42
 }
@@ -84,17 +85,14 @@ M1 focuses on surface claims (`option`, `io`, `exit_status`). Behavior claims ar
 
 ```json
 {
-  "binary_identity": null,
-  "invocation": "ls",
-  "capture_error": null,
+  "invoked_path": "/usr/bin/ls",
+  "binary_identity": "...BinaryIdentity...",
   "claims": ["...Claim..."]
 }
 ```
 
-`binary_identity` is optional when claims were derived from static files. It is present only when
-help text was captured directly from the binary by this tool (or explicitly asserted in the future).
-`invocation` is a human-facing label (argv0) and is not part of binary identity. `capture_error`
-records a failure to capture help output; in that case, `claims` may be empty.
+`invoked_path` records the path used to capture help output. `binary_identity` is present when help
+text was captured directly from the binary by this tool (the current CLI flow).
 
 ## Evidence
 

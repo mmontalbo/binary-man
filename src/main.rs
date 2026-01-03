@@ -1,3 +1,9 @@
+//! CLI entry points for claim extraction, validation, and regeneration.
+//!
+//! The claims workflow is designed to be deterministic: help text is captured
+//! in a controlled environment, then parsed into a versioned, surface-level
+//! claim set with provenance.
+
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use serde::de::DeserializeOwned;
@@ -7,13 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 mod claims;
-mod inspect_tui;
 mod schema;
 mod validate;
 use crate::claims::parse_help_text;
 use schema::{
-    compute_binary_identity_with_env, BinaryIdentity, Claim, ClaimSource, ClaimStatus, ClaimsFile,
-    EnvSnapshot, RegenerationReport, ValidationReport, ValidationResult, ValidationStatus,
+    compute_binary_identity_with_env, BinaryIdentity, Claim, ClaimSource, ClaimsFile, EnvSnapshot,
+    RegenerationReport, ValidationReport, ValidationResult, ValidationStatus,
 };
 use validate::{
     option_from_binding_claim_id, option_from_claim_id, validate_option_binding,
@@ -29,53 +34,23 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Parse inputs (man/help/source excerpts) into a claim set
+    /// Parse help output into a claim set
     Claims(ClaimsArgs),
     /// Validate claims by executing the binary under controlled conditions
     Validate(ValidateArgs),
     /// Regenerate a man page and report from validated claims
     Regenerate(RegenerateArgs),
-    /// Inspect claims and validation results in a TUI
-    Inspect(InspectArgs),
 }
 
 #[derive(Parser, Debug)]
 struct ClaimsArgs {
-    /// Path to the binary (required for capture mode)
+    /// Path to the binary under test
     #[arg(long)]
-    binary: Option<PathBuf>,
-
-    /// Capture --help from the binary under a controlled environment
-    #[arg(long, conflicts_with = "help_text", requires = "binary")]
-    capture_help: bool,
-
-    /// Optional argv0 label for help-derived claims
-    #[arg(long)]
-    argv0: Option<String>,
-
-    /// Environment overrides for capture mode (LC_ALL=...,TZ=...,TERM=...)
-    #[arg(long, value_name = "KV", requires = "capture_help")]
-    env: Option<String>,
-
-    /// Optional output path for captured --help text
-    #[arg(long, value_name = "PATH", requires = "capture_help")]
-    out_help: Option<PathBuf>,
-
-    /// Path to an existing man page to parse
-    #[arg(long)]
-    man: Option<PathBuf>,
-
-    /// Path to a file containing --help output
-    #[arg(long, value_name = "PATH", conflicts_with = "capture_help")]
-    help_text: Option<PathBuf>,
-
-    /// Path to a file containing source excerpts to parse as claims
-    #[arg(long, value_name = "PATH")]
-    source: Option<PathBuf>,
+    binary: PathBuf,
 
     /// Output path for generated claims JSON
     #[arg(long, value_name = "PATH")]
-    out: Option<PathBuf>,
+    out: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -116,17 +91,6 @@ struct RegenerateArgs {
     out_report: Option<PathBuf>,
 }
 
-#[derive(Parser, Debug)]
-struct InspectArgs {
-    /// Path to claims JSON
-    #[arg(long)]
-    claims: PathBuf,
-
-    /// Optional path to validation results JSON
-    #[arg(long)]
-    results: Option<PathBuf>,
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -134,88 +98,45 @@ fn main() -> Result<()> {
         Commands::Claims(args) => cmd_claims(args),
         Commands::Validate(args) => cmd_validate(args),
         Commands::Regenerate(args) => cmd_regenerate(args),
-        Commands::Inspect(args) => cmd_inspect(args),
     }
 }
 
+// Capture help output, parse claims, and write a claims file.
 fn cmd_claims(args: ClaimsArgs) -> Result<()> {
-    println!("TODO: parse documentation inputs into a claims JSON set.");
-    print_opt_path("binary", &args.binary);
-    println!("capture_help: {}", args.capture_help);
-    if let Some(argv0) = &args.argv0 {
-        println!("argv0: {argv0}");
+    println!("Capturing help output into a claims JSON set.");
+    println!("binary: {}", args.binary.display());
+    println!("out: {}", args.out.display());
+    let env = default_capture_env();
+    let capture = capture_help(&args.binary, &env)?;
+
+    let help_text = select_help_text(&capture).ok_or_else(|| {
+        anyhow!(
+            "--help capture produced no output: exit={:?}",
+            capture.status.code()
+        )
+    })?;
+    let source_path = format!("<captured:{}>", capture.arg);
+
+    let binary_identity = compute_binary_identity_with_env(&args.binary, env.clone())?;
+    if !capture.status.success() {
+        return Err(anyhow!(
+            "--help capture failed: exit={:?}, stderr={}",
+            capture.status.code(),
+            capture.stderr.trim()
+        ));
     }
-    if let Some(env) = &args.env {
-        println!("env: {env}");
-    }
-    print_opt_path("out_help", &args.out_help);
-    print_opt_path("man", &args.man);
-    print_opt_path("help_text", &args.help_text);
-    print_opt_path("source", &args.source);
-    print_opt_path("out", &args.out);
-
-    let mut claims = Vec::new();
-    let mut binary_identity = None;
-    let mut capture_error = None;
-
-    if args.capture_help {
-        let binary = args
-            .binary
-            .as_ref()
-            .ok_or_else(|| anyhow!("--binary is required for --capture-help"))?;
-        let env = parse_capture_env(args.env.as_deref())?;
-        let capture = capture_help(binary, &env)?;
-
-        let source_path = if let Some(out_help) = &args.out_help {
-            std::fs::write(out_help, &capture.stdout)?;
-            out_help.display().to_string()
-        } else {
-            "<captured:--help>".to_string()
-        };
-
-        binary_identity = Some(compute_binary_identity_with_env(binary, env.clone())?);
-
-        if !capture.status.success() || !capture.stderr.trim().is_empty() {
-            capture_error = Some(format!(
-                "--help capture failed: exit={:?}, stderr={}",
-                capture.status.code(),
-                capture.stderr.trim()
-            ));
-        } else {
-            let help_claims = parse_help_text(&source_path, &capture.stdout);
-            println!(
-                "Parsed {} surface claims from captured help text.",
-                help_claims.len()
-            );
-            claims.extend(help_claims);
-        }
-    } else if let Some(help_path) = &args.help_text {
-        let content = std::fs::read_to_string(help_path)?;
-        let source_path = help_path.display().to_string();
-        let help_claims = parse_help_text(&source_path, &content);
-        println!(
-            "Parsed {} surface claims from help text.",
-            help_claims.len()
-        );
-        claims.extend(help_claims);
-    }
-    if let Some(out) = &args.out {
-        if args.help_text.is_some() && args.binary.is_some() && !args.capture_help {
-            println!(
-                "Note: binary identity omitted for file-derived help text. Bind identity during validation."
-            );
-        }
-        let invocation = resolve_invocation(&args);
-        let claims = ClaimsFile {
-            binary_identity,
-            invocation,
-            capture_error,
-            claims,
-        };
-        write_json(out, &claims)?;
-        println!("Wrote claims file to {}", out.display());
-    }
-    println!("Next: implement parsers and claim schema serialization.");
+    let claims = parse_help_text(&source_path, help_text);
+    println!(
+        "Parsed {} surface claims from captured help text.",
+        claims.len()
+    );
+    let claims = ClaimsFile {
+        invoked_path: args.binary.clone(),
+        binary_identity,
+        claims,
+    };
+    write_json(&args.out, &claims)?;
+    println!("Wrote claims file to {}", args.out.display());
     Ok(())
 }
 
@@ -223,6 +144,13 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let claims: ClaimsFile = read_json(&args.claims)?;
     let env = validation_env();
     let binary_identity = compute_binary_identity_with_env(&args.binary, env.clone())?;
+    if !binary_identity_matches(&claims.binary_identity, &binary_identity) {
+        return Err(anyhow!(
+            "claims binary identity does not match --binary (expected {}, got {})",
+            summarize_identity(&claims.binary_identity),
+            summarize_identity(&binary_identity)
+        ));
+    }
     let mut results = Vec::new();
 
     for claim in claims.claims {
@@ -257,14 +185,25 @@ fn cmd_regenerate(args: RegenerateArgs) -> Result<()> {
         .collect();
 
     let invocation = claims_file
-        .invocation
-        .clone()
-        .or_else(|| args.binary.file_name().map(|name| name.to_string_lossy().to_string()))
-        .or_else(|| binary_identity.path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .invoked_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .or_else(|| {
+            args.binary
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .or_else(|| {
+            binary_identity
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| "binary".to_string());
     let version = capture_version(&args.binary, &binary_identity.env);
     let man_page = render_man_page(
         &invocation,
+        &claims_file.invoked_path,
         &binary_identity,
         version.as_deref(),
         &claims_file.claims,
@@ -287,18 +226,6 @@ fn cmd_regenerate(args: RegenerateArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_inspect(args: InspectArgs) -> Result<()> {
-    inspect_tui::run(&args.claims, args.results.as_deref())
-}
-
-fn print_opt_path(label: &str, path: &Option<PathBuf>) {
-    let rendered = match path {
-        Some(p) => p.display().to_string(),
-        None => "<none>".to_string(),
-    };
-    println!("{label}: {rendered}");
-}
-
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     std::fs::write(path, json)?;
@@ -311,20 +238,35 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(value)
 }
 
-fn resolve_invocation(args: &ClaimsArgs) -> Option<String> {
-    if let Some(argv0) = &args.argv0 {
-        return Some(argv0.clone());
-    }
-    if args.capture_help {
-        if let Some(binary) = &args.binary {
-            if let Some(name) = binary.file_name() {
-                return Some(name.to_string_lossy().to_string());
-            }
-        }
-    }
-    None
+fn binary_identity_matches(expected: &BinaryIdentity, actual: &BinaryIdentity) -> bool {
+    expected.path == actual.path
+        && expected.hash.algo == actual.hash.algo
+        && expected.hash.value == actual.hash.value
+        && expected.platform.os == actual.platform.os
+        && expected.platform.arch == actual.platform.arch
+        && expected.env.locale == actual.env.locale
+        && expected.env.tz == actual.env.tz
+        && expected.env.term == actual.env.term
 }
 
+fn summarize_identity(identity: &BinaryIdentity) -> String {
+    format!(
+        "path={} hash={}:{} platform={}/{} env=LC_ALL={} TZ={} TERM={}",
+        identity.path.display(),
+        identity.hash.algo,
+        identity.hash.value,
+        identity.platform.os,
+        identity.platform.arch,
+        identity.env.locale,
+        identity.env.tz,
+        identity.env.term
+    )
+}
+
+// Use a stable environment to reduce help output variance.
+// - `LC_ALL=C` keeps messages in a consistent locale.
+// - `TERM=dumb` discourages ANSI color/pager output.
+// - `TZ=UTC` avoids time-dependent formatting.
 fn default_capture_env() -> EnvSnapshot {
     EnvSnapshot {
         locale: "C".to_string(),
@@ -333,39 +275,48 @@ fn default_capture_env() -> EnvSnapshot {
     }
 }
 
-fn parse_capture_env(raw: Option<&str>) -> Result<EnvSnapshot> {
-    let mut env = default_capture_env();
-    let Some(raw) = raw else {
-        return Ok(env);
-    };
-
-    for pair in raw.split(',') {
-        let pair = pair.trim();
-        if pair.is_empty() {
-            continue;
-        }
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| anyhow!("invalid env override: {pair}"))?;
-        match key {
-            "LC_ALL" => env.locale = value.to_string(),
-            "TZ" => env.tz = value.to_string(),
-            "TERM" => env.term = value.to_string(),
-            _ => return Err(anyhow!("unsupported env override key: {key}")),
-        }
-    }
-    Ok(env)
-}
-
+// Raw output from a single help invocation.
 struct HelpCapture {
     stdout: String,
     stderr: String,
     status: ExitStatus,
+    arg: String,
 }
 
+// Prefer stdout for help text, but fall back to stderr when needed.
+// Some binaries emit help or usage text on stderr even when exit status is
+// non-zero, so selection is content-based rather than status-based.
+fn select_help_text(capture: &HelpCapture) -> Option<&str> {
+    if !capture.stdout.trim().is_empty() {
+        Some(capture.stdout.as_str())
+    } else if !capture.stderr.trim().is_empty() {
+        Some(capture.stderr.as_str())
+    } else {
+        None
+    }
+}
+
+// Capture help output, trying `--help` first and falling back to `-h`.
+// The first invocation with any non-empty output wins; this avoids rejecting
+// help text from tools that print usage only on stderr.
 fn capture_help(binary: &Path, env: &EnvSnapshot) -> Result<HelpCapture> {
+    let primary = capture_help_with_arg(binary, env, "--help")?;
+    if select_help_text(&primary).is_some() {
+        return Ok(primary);
+    }
+    let fallback = capture_help_with_arg(binary, env, "-h")?;
+    if select_help_text(&fallback).is_some() {
+        return Ok(fallback);
+    }
+    Ok(primary)
+}
+
+// Invoke the binary with a help flag and return raw output.
+// The environment is cleared to keep outputs deterministic; callers decide
+// how to interpret exit status or stderr content.
+fn capture_help_with_arg(binary: &Path, env: &EnvSnapshot, arg: &str) -> Result<HelpCapture> {
     let output = Command::new(binary)
-        .arg("--help")
+        .arg(arg)
         .env_clear()
         .env("LC_ALL", &env.locale)
         .env("TZ", &env.tz)
@@ -376,6 +327,7 @@ fn capture_help(binary: &Path, env: &EnvSnapshot) -> Result<HelpCapture> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         status: output.status,
+        arg: arg.to_string(),
     })
 }
 
@@ -433,6 +385,7 @@ fn capture_version(binary: &Path, env: &EnvSnapshot) -> Option<String> {
 
 fn render_man_page(
     invocation: &str,
+    invoked_path: &Path,
     binary_identity: &BinaryIdentity,
     version: Option<&str>,
     claims: &[Claim],
@@ -476,6 +429,10 @@ fn render_man_page(
 
     push_raw_line(&mut out, ".SH BINARY IDENTITY");
     push_raw_line(&mut out, ".nf");
+    push_text_line(
+        &mut out,
+        &format!("Invoked Path: {}", invoked_path.display()),
+    );
     push_text_line(
         &mut out,
         &format!("Path: {}", binary_identity.path.display()),
@@ -598,7 +555,7 @@ fn tier_from_claim_id(id: &str) -> ClaimTier {
 }
 
 fn regen_status_and_reason(
-    claim: &Claim,
+    _claim: &Claim,
     result: Option<&ValidationResult>,
 ) -> (RegenStatus, Option<String>) {
     if let Some(result) = result {
@@ -609,15 +566,10 @@ fn regen_status_and_reason(
         };
         return (status, result.reason.clone());
     }
-    match claim.status {
-        ClaimStatus::Confirmed => (RegenStatus::Confirmed, None),
-        ClaimStatus::Refuted => (RegenStatus::Refuted, None),
-        ClaimStatus::Undetermined => (RegenStatus::Undetermined, None),
-        ClaimStatus::Unvalidated => (
-            RegenStatus::Undetermined,
-            Some("no validation result".to_string()),
-        ),
-    }
+    (
+        RegenStatus::Undetermined,
+        Some("no validation result".to_string()),
+    )
 }
 
 fn format_source(source: &ClaimSource) -> String {
@@ -682,6 +634,7 @@ fn escape_roff_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{ClaimKind, ClaimSourceType, ClaimStatus};
     use std::path::PathBuf;
 
     #[test]
@@ -703,6 +656,19 @@ mod tests {
         assert!(!capture.stdout.trim().is_empty());
     }
 
+    #[test]
+    fn missing_validation_results_are_undetermined() {
+        let claim = make_claim(
+            "claim:option:opt=--quiet:exists",
+            ClaimSourceType::Help,
+            "help.txt",
+            Some(1),
+        );
+        let (status, reason) = regen_status_and_reason(&claim, None);
+        assert!(matches!(status, RegenStatus::Undetermined));
+        assert_eq!(reason.as_deref(), Some("no validation result"));
+    }
+
     fn find_in_path(name: &str) -> Option<PathBuf> {
         let path_var = std::env::var_os("PATH")?;
         for dir in std::env::split_paths(&path_var) {
@@ -712,5 +678,22 @@ mod tests {
             }
         }
         None
+    }
+
+    fn make_claim(id: &str, source_type: ClaimSourceType, path: &str, line: Option<u64>) -> Claim {
+        Claim {
+            id: id.to_string(),
+            text: "test".to_string(),
+            kind: ClaimKind::Option,
+            source: ClaimSource {
+                source_type,
+                path: path.to_string(),
+                line,
+            },
+            status: ClaimStatus::Confirmed,
+            extractor: "test".to_string(),
+            raw_excerpt: "raw".to_string(),
+            confidence: None,
+        }
     }
 }

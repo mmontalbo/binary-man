@@ -13,19 +13,20 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn ls_help_available(ls_path: &Path) -> bool {
-    let output = match Command::new(ls_path)
-        .arg("--help")
-        .env_clear()
-        .env("LC_ALL", "C")
-        .env("TZ", "UTC")
-        .env("TERM", "dumb")
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return false,
-    };
-
-    output.status.success() && output.stderr.is_empty()
+    ["--help", "-h"].iter().any(|arg| {
+        let output = match Command::new(ls_path)
+            .arg(arg)
+            .env_clear()
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .env("TERM", "dumb")
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return false,
+        };
+        !output.stdout.is_empty() || !output.stderr.is_empty()
+    })
 }
 
 #[test]
@@ -38,11 +39,21 @@ fn validates_ls_all_option_when_help_is_available() {
     }
 
     let bin = env!("CARGO_BIN_EXE_binary-man");
-    let claims_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/ls_claims.json");
     let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let claims_path = temp_dir.path().join("claims.json");
     let out_path = temp_dir.path().join("validation.json");
 
-    let status = Command::new(bin)
+    let claims_status = Command::new(bin)
+        .arg("claims")
+        .arg("--binary")
+        .arg(&ls_path)
+        .arg("--out")
+        .arg(&claims_path)
+        .status()
+        .expect("run claims");
+    assert!(claims_status.success());
+
+    let validate_status = Command::new(bin)
         .arg("validate")
         .arg("--binary")
         .arg(&ls_path)
@@ -52,7 +63,7 @@ fn validates_ls_all_option_when_help_is_available() {
         .arg(&out_path)
         .status()
         .expect("run validate");
-    assert!(status.success());
+    assert!(validate_status.success());
 
     let content = std::fs::read_to_string(&out_path).expect("read validation report");
     let report: serde_json::Value =
