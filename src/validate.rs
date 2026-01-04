@@ -1,47 +1,7 @@
-//! Validation helpers for surface-level option claims.
-//!
-//! Validation is intentionally conservative: it runs bounded, low-impact probes
-//! and relies on explicit error markers rather than exit status alone.
-//!
-//! ## Pipeline summary
-//! - **Existence**: run `<opt> --help` and look for unrecognized/ambiguous markers.
-//! - **Binding**: run missing-arg and with-arg probes and compare responses.
-//! - **Evidence**: store hashed stdout/stderr plus marker notes.
-//!
-//! ## Example walkthroughs
-//! Existence claim (`--all`) confirmed when no unrecognized marker is present:
-//! ```text
-//! $ tool --all --help
-//! (exit 0, no "unrecognized option" marker)
-//! -> confirmed
-//! ```
-//! Existence claim (`--nope`) refuted when the error mentions the option:
-//! ```text
-//! $ tool --nope --help
-//! error: unrecognized option '--nope'
-//! -> refuted
-//! ```
-//! Required binding confirmed by missing-arg response:
-//! ```text
-//! $ tool --size --help
-//! option '--size' requires an argument
-//! $ tool --size __bvm__ --help
-//! (no missing-arg error)
-//! -> confirmed (required)
-//! ```
-//! Optional binding confirmed when missing-arg is OK but invalid arg is rejected:
-//! ```text
-//! $ tool --color --help
-//! (exit 0)
-//! $ tool --color __bvm__ --help
-//! invalid argument '__bvm__' for '--color'
-//! -> confirmed (optional)
-//! ```
+//! Probe execution and analysis for T0/T1 surface validation.
 
-use crate::claims::parse_help_row_options;
-use crate::schema::{
-    Claim, Determinism, EnvSnapshot, Evidence, ValidationMethod, ValidationResult, ValidationStatus,
-};
+use crate::help::ValueForm;
+use crate::schema::{BindingKind, EnvSnapshot, Evidence, ValidationStatus};
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -109,36 +69,23 @@ struct ExecutionAttempt {
     spawn_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BindingExpectation {
-    Required,
-    Optional,
-}
-
-#[derive(Debug, Clone)]
-struct BindingSpec {
-    option: String,
-    expectation: Option<BindingExpectation>,
-    form: Option<BindingForm>,
-}
-
-#[derive(Debug, Clone)]
-enum BindingForm {
-    Attached(String),
-    Trailing(String),
+#[derive(Debug)]
+pub struct ProbeRun {
+    pub analysis: AttemptAnalysis,
+    pub evidence: Evidence,
 }
 
 #[derive(Debug)]
-struct AttemptAnalysis {
-    unrecognized: bool,
-    missing_arg: bool,
-    arg_not_allowed: bool,
-    invalid_arg: bool,
-    ambiguous: bool,
-    help_like: bool,
-    argument_error: bool,
-    exit_code: Option<i32>,
-    notes: Vec<String>,
+pub struct AttemptAnalysis {
+    pub unrecognized: bool,
+    pub missing_arg: bool,
+    pub arg_not_allowed: bool,
+    pub invalid_arg: bool,
+    pub ambiguous: bool,
+    pub help_like: bool,
+    pub argument_error: bool,
+    pub exit_code: Option<i32>,
+    pub notes: Vec<String>,
 }
 
 /// Default validation environment (`LC_ALL=C`, `TZ=UTC`, `TERM=dumb`).
@@ -150,213 +97,154 @@ pub fn validation_env() -> EnvSnapshot {
     }
 }
 
-/// Extract the canonical option token from an option existence claim ID.
-///
-/// # Examples
-/// ```ignore
-/// use crate::validate::option_from_claim_id;
-/// assert_eq!(
-///     option_from_claim_id("claim:option:opt=--all:exists"),
-///     Some("--all".to_string())
-/// );
-/// assert_eq!(option_from_claim_id("claim:option:opt=--all:binding"), None);
-/// ```
-pub fn option_from_claim_id(id: &str) -> Option<String> {
-    const PREFIX: &str = "claim:option:opt=";
-    const SUFFIX: &str = ":exists";
-    if !id.starts_with(PREFIX) || !id.ends_with(SUFFIX) {
-        return None;
-    }
-    let option = &id[PREFIX.len()..id.len().saturating_sub(SUFFIX.len())];
-    if option.is_empty() {
-        None
-    } else {
-        Some(option.to_string())
-    }
-}
-
-/// Extract the canonical option token from a parameter binding claim ID.
-///
-/// # Examples
-/// ```ignore
-/// use crate::validate::option_from_binding_claim_id;
-/// assert_eq!(
-///     option_from_binding_claim_id("claim:option:opt=--size:binding"),
-///     Some("--size".to_string())
-/// );
-/// assert_eq!(option_from_binding_claim_id("claim:option:opt=--size:exists"), None);
-/// ```
-pub fn option_from_binding_claim_id(id: &str) -> Option<String> {
-    const PREFIX: &str = "claim:option:opt=";
-    const SUFFIX: &str = ":binding";
-    if !id.starts_with(PREFIX) || !id.ends_with(SUFFIX) {
-        return None;
-    }
-    let option = &id[PREFIX.len()..id.len().saturating_sub(SUFFIX.len())];
-    if option.is_empty() {
-        None
-    } else {
-        Some(option.to_string())
-    }
-}
-
-/// Execute a harmless invocation and classify the option existence claim.
-///
-/// The probe always appends `--help` to minimize side effects.
-///
-/// # Examples
-/// ```ignore
-/// # use crate::validate::validate_option_existence;
-/// # use crate::validate::validation_env;
-/// # use std::path::Path;
-/// let env = validation_env();
-/// let claim = crate::schema::Claim {
-///     id: "claim:option:opt=--all:exists".to_string(),
-///     text: "Option --all is listed in help output.".to_string(),
-///     kind: crate::schema::ClaimKind::Option,
-///     source: crate::schema::ClaimSource { source_type: crate::schema::ClaimSourceType::Help, path: "<captured:--help>".to_string(), line: None },
-///     status: crate::schema::ClaimStatus::Unvalidated,
-///     extractor: "parse:help:v1".to_string(),
-///     raw_excerpt: "--all  show hidden entries".to_string(),
-///     confidence: Some(0.9),
-/// };
-/// let result = validate_option_existence(Path::new("tool"), &claim, "--all", &env);
-/// assert!(matches!(result.status, crate::schema::ValidationStatus::Confirmed | crate::schema::ValidationStatus::Undetermined));
-/// ```
-pub fn validate_option_existence(
+pub fn run_existence_probe(
     binary: &Path,
-    claim: &Claim,
     option: &str,
     env: &EnvSnapshot,
-) -> ValidationResult {
+) -> (ValidationStatus, Option<String>, ProbeRun) {
     let args = vec![option.to_string(), "--help".to_string()];
     let attempt = run_attempt(binary, args, env);
-    let (status, notes) = classify_attempt(option, &attempt);
-    let mut attempts = vec![evidence_for_attempt(attempt, env, notes)];
-
-    for alias in alias_options_from_claim(claim, option) {
-        let args = vec![alias.clone(), "--help".to_string()];
-        let attempt = run_attempt(binary, args, env);
-        let (alias_status, alias_note) = classify_attempt(&alias, &attempt);
-        let note = alias_evidence_note(option, &alias, alias_status, alias_note);
-        attempts.push(evidence_for_attempt(attempt, env, note));
-    }
-
-    ValidationResult {
-        claim_id: claim.id.clone(),
+    let analysis = attempt_signals(option, &attempt);
+    let (status, reason) = classify_attempt(&attempt, &analysis);
+    let evidence = evidence_for_attempt(attempt, env, build_attempt_notes("existence", &analysis, None));
+    (
         status,
-        method: ValidationMethod::AcceptanceTest,
-        determinism: Some(Determinism::Deterministic),
-        attempts,
-        observed: None,
-        reason: None,
-    }
+        reason,
+        ProbeRun {
+            analysis,
+            evidence,
+        },
+    )
 }
 
-/// Execute controlled invocations and classify the parameter binding claim.
-///
-/// The validator runs two probes:
-/// - **Missing arg**: `<opt> --help`
-/// - **With arg**: `<opt> __bvm__ --help` (or `--opt=__bvm__` when attached)
-///
-/// # Examples
-/// ```ignore
-/// # use crate::validate::validate_option_binding;
-/// # use crate::validate::validation_env;
-/// # use crate::schema::Claim;
-/// # use std::path::Path;
-/// let env = validation_env();
-/// let claim = Claim {
-///     id: "claim:option:opt=--size:binding".to_string(),
-///     text: "Option --size requires a value in `--size=SIZE` form.".to_string(),
-///     kind: crate::schema::ClaimKind::Option,
-///     source: crate::schema::ClaimSource { source_type: crate::schema::ClaimSourceType::Help, path: "<captured:--help>".to_string(), line: None },
-///     status: crate::schema::ClaimStatus::Unvalidated,
-///     extractor: "parse:help:v1".to_string(),
-///     raw_excerpt: "--size=SIZE".to_string(),
-///     confidence: Some(0.7),
-/// };
-/// let result = validate_option_binding(Path::new("tool"), &claim, &env);
-/// assert!(matches!(result.status, crate::schema::ValidationStatus::Confirmed | crate::schema::ValidationStatus::Undetermined | crate::schema::ValidationStatus::Refuted));
-/// ```
-pub fn validate_option_binding(
+pub fn run_invalid_value_probe(
     binary: &Path,
-    claim: &Claim,
+    option: &str,
     env: &EnvSnapshot,
-) -> ValidationResult {
-    let Some(spec) = binding_spec_from_claim(claim) else {
-        return ValidationResult {
-            claim_id: claim.id.clone(),
-            status: ValidationStatus::Undetermined,
-            method: ValidationMethod::AcceptanceTest,
-            determinism: Some(Determinism::Deterministic),
-            attempts: Vec::new(),
-            observed: None,
-            reason: Some("unrecognized parameter binding claim".to_string()),
-        };
-    };
+    form: Option<ValueForm>,
+) -> ProbeRun {
+    let mut args = build_with_value_args(form, option, BINDING_DUMMY_VALUE);
+    args.push("--help".to_string());
+    let attempt = run_attempt(binary, args, env);
+    let analysis = attempt_signals(option, &attempt);
+    let form_note = form.map(|form| match form {
+        ValueForm::Attached => "value_form=attached",
+        ValueForm::Trailing => "value_form=trailing",
+    });
+    let evidence = evidence_for_attempt(attempt, env, build_attempt_notes("invalid_value", &analysis, form_note));
+    ProbeRun { analysis, evidence }
+}
 
-    let missing_args = vec![spec.option.clone(), "--help".to_string()];
-    let missing_attempt = run_attempt(binary, missing_args, env);
-    let missing_analysis = attempt_signals(&spec.option, &missing_attempt);
+pub fn run_option_at_end_probe(binary: &Path, option: &str, env: &EnvSnapshot) -> ProbeRun {
+    let args = vec![option.to_string()];
+    let attempt = run_attempt(binary, args, env);
+    let analysis = attempt_signals(option, &attempt);
+    let evidence = evidence_for_attempt(attempt, env, build_attempt_notes("option_at_end", &analysis, None));
+    ProbeRun { analysis, evidence }
+}
 
-    let mut with_arg_args = build_with_arg_args(spec.form.as_ref(), &spec.option);
-    with_arg_args.push("--help".to_string());
-    let with_arg_attempt = run_attempt(binary, with_arg_args, env);
-    let with_arg_analysis = attempt_signals(&spec.option, &with_arg_attempt);
-
-    let (mut status, mut reason) = match spec.expectation {
-        Some(expectation) => {
-            classify_binding_attempts(expectation, &missing_analysis, &with_arg_analysis)
-        }
-        None => (
+pub fn infer_binding(
+    missing: &AttemptAnalysis,
+    invalid: &AttemptAnalysis,
+    option_at_end: Option<&AttemptAnalysis>,
+    value_form: Option<ValueForm>,
+) -> (ValidationStatus, Option<BindingKind>, Option<String>) {
+    if missing.unrecognized || invalid.unrecognized {
+        return (
             ValidationStatus::Undetermined,
-            Some("parameter binding expectation missing".to_string()),
-        ),
-    };
+            None,
+            Some("unrecognized option response".to_string()),
+        );
+    }
 
-    let mut attempts = vec![
-        evidence_for_attempt(
-            missing_attempt,
-            env,
-            build_attempt_notes("missing_arg", &missing_analysis),
-        ),
-        evidence_for_attempt(
-            with_arg_attempt,
-            env,
-            build_attempt_notes("with_arg", &with_arg_analysis),
-        ),
-    ];
-    if matches!(spec.expectation, Some(BindingExpectation::Required))
-        && matches!(status, ValidationStatus::Undetermined)
+    if missing.ambiguous || invalid.ambiguous {
+        return (
+            ValidationStatus::Undetermined,
+            None,
+            Some("ambiguous option response".to_string()),
+        );
+    }
+
+    if missing.missing_arg {
+        return (
+            ValidationStatus::Confirmed,
+            Some(BindingKind::Required),
+            Some("missing argument response observed".to_string()),
+        );
+    }
+
+    if missing.invalid_arg {
+        return (
+            ValidationStatus::Confirmed,
+            Some(BindingKind::Required),
+            Some("invalid argument response observed for missing probe".to_string()),
+        );
+    }
+
+    if invalid.arg_not_allowed {
+        return (
+            ValidationStatus::Confirmed,
+            Some(BindingKind::NoValue),
+            Some("argument not allowed response observed".to_string()),
+        );
+    }
+
+    let help_consumed = !missing.help_like && invalid.help_like;
+
+    if invalid.invalid_arg {
+        if help_consumed {
+            return (
+                ValidationStatus::Confirmed,
+                Some(BindingKind::Required),
+                Some("missing probe likely consumed --help; invalid argument observed".to_string()),
+            );
+        }
+        return (
+            ValidationStatus::Confirmed,
+            Some(BindingKind::Optional),
+            Some("invalid argument response observed".to_string()),
+        );
+    }
+
+    if missing.exit_code == Some(0)
+        && invalid.exit_code == Some(0)
+        && !missing.argument_error
+        && !invalid.argument_error
     {
-        let end_args = vec![spec.option.clone()];
-        let end_attempt = run_attempt(binary, end_args, env);
-        let end_analysis = attempt_signals(&spec.option, &end_attempt);
-        attempts.push(evidence_for_attempt(
-            end_attempt,
-            env,
-            build_attempt_notes("option_at_end", &end_analysis),
-        ));
-        let updated = apply_option_at_end_probe(status, reason, &end_analysis);
-        status = updated.0;
-        reason = updated.1;
+        if matches!(value_form, Some(ValueForm::Attached)) {
+            return (
+                ValidationStatus::Confirmed,
+                Some(BindingKind::Optional),
+                Some("no argument errors detected with attached value".to_string()),
+            );
+        }
+        return (
+            ValidationStatus::Undetermined,
+            None,
+            Some("no argument errors detected with trailing value".to_string()),
+        );
     }
 
-    ValidationResult {
-        claim_id: claim.id.clone(),
-        status,
-        method: ValidationMethod::AcceptanceTest,
-        determinism: Some(Determinism::Deterministic),
-        attempts,
-        observed: None,
-        reason,
+    if let Some(end) = option_at_end {
+        if end.missing_arg && end.exit_code.unwrap_or(0) != 0 {
+            return (
+                ValidationStatus::Confirmed,
+                Some(BindingKind::Required),
+                Some("missing argument response observed (option at end probe)".to_string()),
+            );
+        }
     }
+
+    (
+        ValidationStatus::Undetermined,
+        None,
+        Some("insufficient binding evidence".to_string()),
+    )
 }
 
 fn classify_attempt(
-    option: &str,
     attempt: &ExecutionAttempt,
+    analysis: &AttemptAnalysis,
 ) -> (ValidationStatus, Option<String>) {
     if let Some(err) = &attempt.spawn_error {
         return (
@@ -372,15 +260,14 @@ fn classify_attempt(
         );
     };
 
-    let signals = attempt_signals(option, attempt);
-    if signals.unrecognized {
+    if analysis.unrecognized {
         return (ValidationStatus::Refuted, None);
     }
-    if let Some(note) = find_note_with_prefix(&signals.notes, "unrecognized option marker") {
+    if let Some(note) = find_note_with_prefix(&analysis.notes, "unrecognized option marker") {
         return (ValidationStatus::Undetermined, Some(note));
     }
-    if signals.ambiguous {
-        let note = find_note_with_prefix(&signals.notes, "ambiguous option response")
+    if analysis.ambiguous {
+        let note = find_note_with_prefix(&analysis.notes, "ambiguous option response")
             .or_else(|| Some("ambiguous option response".to_string()));
         return (ValidationStatus::Undetermined, note);
     }
@@ -391,7 +278,7 @@ fn classify_attempt(
             "nonzero exit ({exit_code}) without unrecognized option marker"
         ));
     }
-    if signals.argument_error {
+    if analysis.argument_error {
         notes.push("argument error reported".to_string());
     }
 
@@ -404,138 +291,31 @@ fn classify_attempt(
     (ValidationStatus::Confirmed, note)
 }
 
-fn alias_options_from_claim(claim: &Claim, canonical: &str) -> Vec<String> {
-    let mut aliases: Vec<String> = parse_help_row_options(&claim.raw_excerpt)
-        .into_iter()
-        .filter(|opt| opt != canonical)
-        .filter(|opt| opt.starts_with('-') && !opt.starts_with("--"))
-        .collect();
-    aliases.sort();
-    aliases.dedup();
-    aliases
-}
-
 fn find_note_with_prefix(notes: &[String], prefix: &str) -> Option<String> {
     notes.iter().find(|note| note.starts_with(prefix)).cloned()
 }
 
-fn alias_evidence_note(
-    canonical: &str,
-    alias: &str,
-    status: ValidationStatus,
-    note: Option<String>,
+fn build_attempt_notes(
+    probe: &str,
+    analysis: &AttemptAnalysis,
+    extra: Option<&str>,
 ) -> Option<String> {
-    let mut parts = vec![
-        "probe=alias".to_string(),
-        format!("alias={alias}"),
-        format!("alias_of={canonical}"),
-        format!("alias_status={}", status_label(status)),
-    ];
-    if let Some(note) = note {
-        parts.push(note);
+    let mut parts = Vec::new();
+    parts.push(format!("probe={probe}"));
+    if let Some(extra) = extra {
+        parts.push(extra.to_string());
     }
+    parts.extend(analysis.notes.iter().cloned());
     Some(parts.join("; "))
 }
 
-fn status_label(status: ValidationStatus) -> &'static str {
-    match status {
-        ValidationStatus::Confirmed => "confirmed",
-        ValidationStatus::Refuted => "refuted",
-        ValidationStatus::Undetermined => "undetermined",
-    }
-}
-
-fn evidence_for_attempt(
-    attempt: ExecutionAttempt,
-    env: &EnvSnapshot,
-    notes: Option<String>,
-) -> Evidence {
-    Evidence {
-        args: attempt.args,
-        env: env_map(env),
-        exit_code: attempt.exit_code,
-        stdout: Some(hash_bytes(&attempt.stdout)),
-        stderr: Some(hash_bytes(&attempt.stderr)),
-        notes,
-    }
-}
-
-fn binding_spec_from_claim(claim: &Claim) -> Option<BindingSpec> {
-    let option = option_from_binding_claim_id(&claim.id)?;
-    let expectation = parse_binding_expectation(&claim.text, &claim.raw_excerpt);
-    let form = parse_binding_form(&claim.text);
-    Some(BindingSpec {
-        option,
-        expectation,
-        form,
-    })
-}
-
-fn parse_binding_expectation(text: &str, raw_excerpt: &str) -> Option<BindingExpectation> {
-    let lower = text.to_lowercase();
-    if lower.contains("optional value") {
-        return Some(BindingExpectation::Optional);
-    }
-    if lower.contains("requires a value") {
-        return Some(BindingExpectation::Required);
-    }
-    if raw_excerpt.contains("[=") {
-        return Some(BindingExpectation::Optional);
-    }
-    if raw_excerpt.contains('=') {
-        return Some(BindingExpectation::Required);
-    }
-    None
-}
-
-fn parse_binding_form(text: &str) -> Option<BindingForm> {
-    let form = extract_form_text(text)?;
-    parse_binding_form_text(&form)
-}
-
-fn extract_form_text(text: &str) -> Option<String> {
-    let start = text.find('`')?;
-    let rest = &text[start + 1..];
-    let end = rest.find('`')?;
-    Some(rest[..end].to_string())
-}
-
-fn parse_binding_form_text(form: &str) -> Option<BindingForm> {
-    let trimmed = form.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(idx) = trimmed.find("[=") {
-        let option = trimmed[..idx].trim();
-        if !option.is_empty() {
-            return Some(BindingForm::Attached(option.to_string()));
-        }
-    }
-    if let Some(idx) = trimmed.find('=') {
-        let option = trimmed[..idx].trim();
-        if !option.is_empty() {
-            return Some(BindingForm::Attached(option.to_string()));
-        }
-    }
-    if let Some(token) = trimmed.split_whitespace().next() {
-        if token != trimmed {
-            return Some(BindingForm::Trailing(token.to_string()));
-        }
-    }
-    None
-}
-
-fn build_with_arg_args(form: Option<&BindingForm>, option: &str) -> Vec<String> {
-    build_with_value_args(form, option, BINDING_DUMMY_VALUE)
-}
-
-fn build_with_value_args(form: Option<&BindingForm>, option: &str, value: &str) -> Vec<String> {
+fn build_with_value_args(form: Option<ValueForm>, option: &str, value: &str) -> Vec<String> {
     if let Some(form) = form {
         match form {
-            BindingForm::Attached(option) => {
+            ValueForm::Attached => {
                 return vec![format!("{option}={value}")];
             }
-            BindingForm::Trailing(option) => {
+            ValueForm::Trailing => {
                 return vec![option.to_string(), value.to_string()];
             }
         }
@@ -693,117 +473,6 @@ fn attempt_signals(option: &str, attempt: &ExecutionAttempt) -> AttemptAnalysis 
     }
 }
 
-fn classify_binding_attempts(
-    expectation: BindingExpectation,
-    missing: &AttemptAnalysis,
-    with_arg: &AttemptAnalysis,
-) -> (ValidationStatus, Option<String>) {
-    if missing.unrecognized || with_arg.unrecognized {
-        return (
-            ValidationStatus::Refuted,
-            Some("unrecognized option response".to_string()),
-        );
-    }
-
-    let ambiguous_note = if missing.ambiguous || with_arg.ambiguous {
-        Some("ambiguous option response".to_string())
-    } else {
-        None
-    };
-    let help_consumed = !missing.help_like && with_arg.help_like;
-
-    match expectation {
-        BindingExpectation::Required => {
-            if missing.missing_arg {
-                (
-                    ValidationStatus::Confirmed,
-                    Some("missing argument response observed".to_string()),
-                )
-            } else if missing.invalid_arg {
-                (
-                    ValidationStatus::Confirmed,
-                    Some("invalid argument response observed for missing probe".to_string()),
-                )
-            } else if help_consumed && with_arg.invalid_arg {
-                (
-                    ValidationStatus::Confirmed,
-                    Some(
-                        "missing probe likely consumed --help; invalid argument observed"
-                            .to_string(),
-                    ),
-                )
-            } else if with_arg.arg_not_allowed {
-                (
-                    ValidationStatus::Refuted,
-                    Some("argument not allowed response observed".to_string()),
-                )
-            } else if help_consumed {
-                (
-                    ValidationStatus::Undetermined,
-                    Some(
-                        "missing probe likely consumed --help; insufficient invalid-value evidence"
-                            .to_string(),
-                    ),
-                )
-            } else {
-                (ValidationStatus::Undetermined, ambiguous_note)
-            }
-        }
-        BindingExpectation::Optional => {
-            if missing.missing_arg {
-                (
-                    ValidationStatus::Refuted,
-                    Some("missing argument response observed".to_string()),
-                )
-            } else if with_arg.arg_not_allowed {
-                (
-                    ValidationStatus::Refuted,
-                    Some("argument not allowed response observed".to_string()),
-                )
-            } else if with_arg.invalid_arg {
-                (
-                    ValidationStatus::Confirmed,
-                    Some("argument accepted with invalid value".to_string()),
-                )
-            } else if missing.exit_code == Some(0) && with_arg.exit_code == Some(0) {
-                (
-                    ValidationStatus::Confirmed,
-                    Some("no argument errors detected".to_string()),
-                )
-            } else {
-                (ValidationStatus::Undetermined, ambiguous_note)
-            }
-        }
-    }
-}
-
-fn apply_option_at_end_probe(
-    status: ValidationStatus,
-    reason: Option<String>,
-    analysis: &AttemptAnalysis,
-) -> (ValidationStatus, Option<String>) {
-    if !matches!(status, ValidationStatus::Undetermined) {
-        return (status, reason);
-    }
-    if analysis.missing_arg && analysis.exit_code.unwrap_or(0) != 0 {
-        return (
-            ValidationStatus::Confirmed,
-            Some("missing argument response observed (option at end probe)".to_string()),
-        );
-    }
-    let reason = reason.or_else(|| {
-        Some("option-at-end probe did not yield missing-argument response".to_string())
-    });
-    (status, reason)
-}
-
-fn build_attempt_notes(probe: &str, analysis: &AttemptAnalysis) -> Option<String> {
-    let mut parts = Vec::new();
-    parts.push(format!("probe={probe}"));
-    parts.extend(analysis.notes.iter().cloned());
-    Some(parts.join("; "))
-}
-
 fn env_map(env: &EnvSnapshot) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert("LC_ALL".to_string(), env.locale.clone());
@@ -814,6 +483,21 @@ fn env_map(env: &EnvSnapshot) -> BTreeMap<String, String> {
 
 fn hash_bytes(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
+}
+
+fn evidence_for_attempt(
+    attempt: ExecutionAttempt,
+    env: &EnvSnapshot,
+    notes: Option<String>,
+) -> Evidence {
+    Evidence {
+        args: attempt.args,
+        env: env_map(env),
+        exit_code: attempt.exit_code,
+        stdout: Some(hash_bytes(&attempt.stdout)),
+        stderr: Some(hash_bytes(&attempt.stderr)),
+        notes,
+    }
 }
 
 fn find_marker<'a>(output: &'a str, markers: &[&'a str]) -> Option<&'a str> {
@@ -1060,7 +744,8 @@ mod tests {
     #[test]
     fn refutes_when_unrecognized_option_matches_claim() {
         let attempt = attempt_from_output("error: unrecognized option '--nope'");
-        let (status, note) = classify_attempt("--nope", &attempt);
+        let analysis = attempt_signals("--nope", &attempt);
+        let (status, note) = classify_attempt(&attempt, &analysis);
         assert!(matches!(status, ValidationStatus::Refuted));
         assert!(note.is_none());
     }
@@ -1068,7 +753,8 @@ mod tests {
     #[test]
     fn undetermined_when_unrecognized_option_is_different() {
         let attempt = attempt_from_output("error: unrecognized option '--help'");
-        let (status, note) = classify_attempt("--all", &attempt);
+        let analysis = attempt_signals("--all", &attempt);
+        let (status, note) = classify_attempt(&attempt, &analysis);
         assert!(matches!(status, ValidationStatus::Undetermined));
         assert!(note.is_some());
     }
@@ -1076,7 +762,8 @@ mod tests {
     #[test]
     fn confirms_when_argument_missing() {
         let attempt = attempt_from_output("option '--block-size' requires an argument");
-        let (status, note) = classify_attempt("--block-size", &attempt);
+        let analysis = attempt_signals("--block-size", &attempt);
+        let (status, note) = classify_attempt(&attempt, &analysis);
         assert!(matches!(status, ValidationStatus::Confirmed));
         assert!(note.is_some());
     }
@@ -1084,7 +771,8 @@ mod tests {
     #[test]
     fn refutes_getopt_short_option_error() {
         let attempt = attempt_from_output("invalid option -- 'i'");
-        let (status, note) = classify_attempt("-i", &attempt);
+        let analysis = attempt_signals("-i", &attempt);
+        let (status, note) = classify_attempt(&attempt, &analysis);
         assert!(matches!(status, ValidationStatus::Refuted));
         assert!(note.is_none());
     }
@@ -1098,103 +786,43 @@ mod tests {
             stderr: Vec::new(),
             spawn_error: Some("boom".to_string()),
         };
-        let (status, note) = classify_attempt("--all", &attempt);
+        let analysis = attempt_signals("--all", &attempt);
+        let (status, note) = classify_attempt(&attempt, &analysis);
         assert!(matches!(status, ValidationStatus::Undetermined));
         assert_eq!(note.as_deref(), Some("spawn failed: boom"));
     }
 
     #[test]
-    fn confirms_required_binding_on_missing_argument() {
+    fn infers_required_binding_on_missing_argument() {
         let missing = attempt_from_output("option '--size' requires an argument");
-        let with_arg = attempt_from_output("");
+        let invalid = attempt_from_output("");
         let missing_analysis = attempt_signals("--size", &missing);
-        let with_arg_analysis = attempt_signals("--size", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
+        let invalid_analysis = attempt_signals("--size", &invalid);
+        let (status, kind, _) = infer_binding(&missing_analysis, &invalid_analysis, None, None);
         assert!(matches!(status, ValidationStatus::Confirmed));
+        assert!(matches!(kind, Some(BindingKind::Required)));
     }
 
     #[test]
-    fn refutes_optional_binding_on_missing_argument() {
-        let missing = attempt_from_output("option '--size' requires an argument");
-        let with_arg = attempt_from_output("");
-        let missing_analysis = attempt_signals("--size", &missing);
-        let with_arg_analysis = attempt_signals("--size", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Optional,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Refuted));
-    }
-
-    #[test]
-    fn confirms_optional_binding_on_invalid_argument() {
+    fn infers_no_value_on_argument_not_allowed() {
         let missing = attempt_from_output_with_code("", 0);
-        let with_arg = attempt_from_output("invalid argument 'nope' for '--color'");
+        let invalid = attempt_from_output("option '--all' doesn't allow an argument");
+        let missing_analysis = attempt_signals("--all", &missing);
+        let invalid_analysis = attempt_signals("--all", &invalid);
+        let (status, kind, _) = infer_binding(&missing_analysis, &invalid_analysis, None, None);
+        assert!(matches!(status, ValidationStatus::Confirmed));
+        assert!(matches!(kind, Some(BindingKind::NoValue)));
+    }
+
+    #[test]
+    fn infers_optional_binding_on_invalid_argument() {
+        let missing = attempt_from_output_with_code("", 0);
+        let invalid = attempt_from_output("invalid argument 'nope' for '--color'");
         let missing_analysis = attempt_signals("--color", &missing);
-        let with_arg_analysis = attempt_signals("--color", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Optional,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
+        let invalid_analysis = attempt_signals("--color", &invalid);
+        let (status, kind, _) = infer_binding(&missing_analysis, &invalid_analysis, None, None);
         assert!(matches!(status, ValidationStatus::Confirmed));
-    }
-
-    #[test]
-    fn confirms_required_binding_on_invalid_argument_in_missing_probe() {
-        let missing = attempt_from_output("ls: invalid argument '--help' for '--format'");
-        let with_arg = attempt_from_output("ls: invalid argument '__bvm__' for '--format'");
-        let missing_analysis = attempt_signals("--format", &missing);
-        let with_arg_analysis = attempt_signals("--format", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Confirmed));
-    }
-
-    #[test]
-    fn confirms_required_binding_on_invalid_option_argument_in_missing_probe() {
-        let missing = attempt_from_output("ls: invalid --block-size argument '--help'");
-        let with_arg = attempt_from_output("ls: invalid --block-size argument '__bvm__'");
-        let missing_analysis = attempt_signals("--block-size", &missing);
-        let with_arg_analysis = attempt_signals("--block-size", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Confirmed));
-    }
-
-    #[test]
-    fn confirms_required_binding_with_option_at_end_probe() {
-        let end_attempt = attempt_from_output("ls: option '--hide' requires an argument");
-        let end_analysis = attempt_signals("--hide", &end_attempt);
-        let (status, reason) =
-            apply_option_at_end_probe(ValidationStatus::Undetermined, None, &end_analysis);
-        assert!(matches!(status, ValidationStatus::Confirmed));
-        assert!(reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("option at end probe"));
-    }
-
-    #[test]
-    fn attributes_missing_argument_without_option_to_tested_option() {
-        let attempt = attempt_from_output("missing argument");
-        let analysis = attempt_signals("--size", &attempt);
-        assert!(analysis.missing_arg);
-        assert!(analysis
-            .notes
-            .iter()
-            .any(|note| note.contains("attributed to tested option")));
+        assert!(matches!(kind, Some(BindingKind::Optional)));
     }
 
     #[test]
@@ -1220,91 +848,22 @@ mod tests {
     }
 
     #[test]
-    fn build_with_arg_args_uses_trailing_form() {
-        let form = parse_binding_form_text("--output FILE");
-        let args = build_with_arg_args(form.as_ref(), "--output");
-        assert_eq!(
-            args,
-            vec!["--output".to_string(), BINDING_DUMMY_VALUE.to_string()]
-        );
-    }
-
-    #[test]
-    fn build_with_arg_args_uses_trailing_short_form() {
-        let form = parse_binding_form_text("-o FILE");
-        let args = build_with_arg_args(form.as_ref(), "-o");
-        assert_eq!(
-            args,
-            vec!["-o".to_string(), BINDING_DUMMY_VALUE.to_string()]
-        );
-    }
-
-    #[test]
     fn option_matches_attached_value() {
         assert!(option_matches("--sort=__bvm__", "--sort"));
     }
 
     #[test]
-    fn does_not_confirm_required_binding_on_help_consumed_without_invalid_value() {
+    fn infers_required_binding_when_help_consumed_and_invalid_value() {
         let missing = attempt_from_output_with_stdout("file1\nfile2", "", 0);
-        let with_arg = attempt_from_output_with_stdout("Usage: tool [OPTION]", "", 0);
-        let missing_analysis = attempt_signals("--hide", &missing);
-        let with_arg_analysis = attempt_signals("--hide", &with_arg);
-        let (status, reason) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Undetermined));
-        assert!(reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("missing probe likely consumed --help"));
-    }
-
-    #[test]
-    fn confirms_required_binding_when_help_consumed_and_invalid_value() {
-        let missing = attempt_from_output_with_stdout("file1\nfile2", "", 0);
-        let with_arg = attempt_from_output_with_stdout(
+        let invalid = attempt_from_output_with_stdout(
             "Usage: tool [OPTION]",
             "invalid argument '__bvm__' for '--hide'",
             1,
         );
         let missing_analysis = attempt_signals("--hide", &missing);
-        let with_arg_analysis = attempt_signals("--hide", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
+        let invalid_analysis = attempt_signals("--hide", &invalid);
+        let (status, kind, _) = infer_binding(&missing_analysis, &invalid_analysis, None, None);
         assert!(matches!(status, ValidationStatus::Confirmed));
-    }
-
-    #[test]
-    fn refutes_optional_binding_on_argument_not_allowed() {
-        let missing = attempt_from_output_with_code("", 0);
-        let with_arg = attempt_from_output("option '--all' doesn't allow an argument");
-        let missing_analysis = attempt_signals("--all", &missing);
-        let with_arg_analysis = attempt_signals("--all", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Optional,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Refuted));
-    }
-
-    #[test]
-    fn refutes_required_binding_on_unrecognized_option() {
-        let missing = attempt_from_output("error: unrecognized option '--ghost'");
-        let with_arg = attempt_from_output("");
-        let missing_analysis = attempt_signals("--ghost", &missing);
-        let with_arg_analysis = attempt_signals("--ghost", &with_arg);
-        let (status, _) = classify_binding_attempts(
-            BindingExpectation::Required,
-            &missing_analysis,
-            &with_arg_analysis,
-        );
-        assert!(matches!(status, ValidationStatus::Refuted));
+        assert!(matches!(kind, Some(BindingKind::Required)));
     }
 }

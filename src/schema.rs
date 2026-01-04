@@ -1,4 +1,4 @@
-//! Schema types for claims, evidence, and reports.
+//! Schema types for surface extraction, planning, and reports.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -33,53 +33,112 @@ pub struct EnvSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaimsFile {
+pub struct CaptureOutput {
+    pub args: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfReport {
+    pub help: CaptureOutput,
+    pub version: CaptureOutput,
+    pub usage_error: CaptureOutput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbePlan {
+    pub planner_version: String,
+    pub options: Vec<PlannedOption>,
+    pub budget: ProbeBudget,
+    pub stop_rules: StopRules,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedOption {
+    pub option: String,
+    pub probes: Vec<ProbeType>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeBudget {
+    pub max_total: usize,
+    pub max_per_option: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopRules {
+    pub stop_on_unrecognized: bool,
+    pub stop_on_binding_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeType {
+    Existence,
+    InvalidValue,
+    OptionAtEnd,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SurfaceReport {
     pub invoked_path: PathBuf,
     pub binary_identity: BinaryIdentity,
-    pub claims: Vec<Claim>,
+    pub planner: PlannerInfo,
+    pub probe_library_version: String,
+    pub timings_ms: Timings,
+    pub self_report: SelfReport,
+    pub options: Vec<OptionSurface>,
+    pub higher_tiers: HigherTierStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Claim {
-    pub id: String,
-    pub text: String,
-    pub kind: ClaimKind,
-    pub source: ClaimSource,
-    pub status: ClaimStatus,
-    pub extractor: String,
-    pub raw_excerpt: String,
-    pub confidence: Option<f32>,
+pub struct PlannerInfo {
+    pub version: String,
+    pub plan_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Timings {
+    pub planner_ms: u128,
+    pub probes_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionSurface {
+    pub option: String,
+    pub existence: TierResult,
+    pub binding: BindingResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierResult {
+    pub status: ValidationStatus,
+    pub reason: Option<String>,
+    pub evidence: Vec<Evidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BindingResult {
+    pub status: ValidationStatus,
+    pub kind: Option<BindingKind>,
+    pub reason: Option<String>,
+    pub evidence: Vec<Evidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClaimKind {
-    Option,
-    Behavior,
-    Env,
-    Io,
-    Error,
-    ExitStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaimSource {
-    #[serde(rename = "type")]
-    pub source_type: ClaimSourceType,
-    pub path: String,
-    pub line: Option<u64>,
+pub enum BindingKind {
+    NoValue,
+    Required,
+    Optional,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClaimSourceType {
-    Help,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClaimStatus {
-    Unvalidated,
+pub enum ValidationStatus {
     Confirmed,
     Refuted,
     Undetermined,
@@ -96,55 +155,16 @@ pub struct Evidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationResult {
-    pub claim_id: String,
-    pub status: ValidationStatus,
-    pub method: ValidationMethod,
-    pub determinism: Option<Determinism>,
-    pub attempts: Vec<Evidence>,
-    pub observed: Option<String>,
-    pub reason: Option<String>,
+pub struct HigherTierStatus {
+    pub t2: TierStatus,
+    pub t3: TierStatus,
+    pub t4: TierStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ValidationStatus {
-    Confirmed,
-    Refuted,
-    Undetermined,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValidationMethod {
-    AcceptanceTest,
-    BehaviorFixture,
-    StderrMatch,
-    ExitCode,
-    OutputDiff,
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Determinism {
-    Deterministic,
-    EnvSensitive,
-    Flaky,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationReport {
-    pub binary_identity: BinaryIdentity,
-    pub results: Vec<ValidationResult>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegenerationReport {
-    pub binary_identity: BinaryIdentity,
-    pub claims_path: PathBuf,
-    pub results_path: PathBuf,
-    pub out_man: PathBuf,
+pub enum TierStatus {
+    NotEvaluated,
 }
 
 /// Compute binary identity using a provided environment snapshot.

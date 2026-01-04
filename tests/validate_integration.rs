@@ -29,8 +29,20 @@ fn ls_help_available(ls_path: &Path) -> bool {
     })
 }
 
+fn find_surface_json(out_dir: &Path) -> Option<PathBuf> {
+    let surface_root = out_dir.join("surface");
+    let entries = std::fs::read_dir(surface_root).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("surface.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 #[test]
-fn validates_ls_all_option_when_help_is_available() {
+fn surface_extracts_t0_t1_with_planner() {
     let Some(ls_path) = find_in_path("ls") else {
         return;
     };
@@ -39,83 +51,45 @@ fn validates_ls_all_option_when_help_is_available() {
     }
 
     let bin = env!("CARGO_BIN_EXE_binary-man");
+    let planner = env!("CARGO_BIN_EXE_planner_stub");
     let temp_dir = tempfile::tempdir().expect("create temp dir");
-    let claims_path = temp_dir.path().join("claims.json");
-    let out_path = temp_dir.path().join("validation.json");
+    let out_dir = temp_dir.path().join("out");
 
-    let claims_status = Command::new(bin)
-        .arg("claims")
-        .arg("--binary")
+    let status = Command::new(bin)
+        .arg("surface")
         .arg(&ls_path)
-        .arg("--out")
-        .arg(&claims_path)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .env("BVM_PLANNER_CMD", planner)
         .status()
-        .expect("run claims");
-    assert!(claims_status.success());
+        .expect("run surface");
+    assert!(status.success());
 
-    let validate_status = Command::new(bin)
-        .arg("validate")
-        .arg("--binary")
-        .arg(&ls_path)
-        .arg("--claims")
-        .arg(&claims_path)
-        .arg("--out")
-        .arg(&out_path)
-        .status()
-        .expect("run validate");
-    assert!(validate_status.success());
+    let surface_path = find_surface_json(&out_dir).expect("surface.json path");
+    let content = std::fs::read_to_string(&surface_path).expect("read surface report");
+    let report: serde_json::Value = serde_json::from_str(&content).expect("parse surface report");
 
-    let content = std::fs::read_to_string(&out_path).expect("read validation report");
-    let report: serde_json::Value =
-        serde_json::from_str(&content).expect("parse validation report");
-    let results = report
-        .get("results")
+    let options = report
+        .get("options")
         .and_then(|value| value.as_array())
-        .expect("results array");
+        .expect("options array");
+    assert!(!options.is_empty());
 
-    let result = results
-        .iter()
-        .find(|value| {
-            value.get("claim_id").and_then(|value| value.as_str())
-                == Some("claim:option:opt=--all:exists")
-        })
-        .expect("expected --all result");
-    let status = result
-        .get("status")
-        .and_then(|value| value.as_str())
-        .expect("status string");
+    let higher = report.get("higher_tiers").expect("higher tiers");
+    assert_eq!(
+        higher.get("t2").and_then(|value| value.as_str()),
+        Some("not_evaluated")
+    );
+    assert_eq!(
+        higher.get("t3").and_then(|value| value.as_str()),
+        Some("not_evaluated")
+    );
+    assert_eq!(
+        higher.get("t4").and_then(|value| value.as_str()),
+        Some("not_evaluated")
+    );
 
-    assert_eq!(status, "confirmed");
-
-    let has_binding = results.iter().any(|value| {
-        value.get("claim_id").and_then(|value| value.as_str())
-            == Some("claim:option:opt=--block-size:binding")
-    });
-    assert!(has_binding, "expected --block-size binding result");
-}
-
-#[test]
-fn ls_hide_requires_argument_when_help_is_available() {
-    let Some(ls_path) = find_in_path("ls") else {
-        return;
-    };
-    if !ls_help_available(&ls_path) {
-        return;
-    }
-
-    let output = match Command::new(&ls_path)
-        .arg("--hide")
-        .env_clear()
-        .env("LC_ALL", "C")
-        .env("TZ", "UTC")
-        .env("TERM", "dumb")
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return,
-    };
-
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("requires an argument"));
+    let first = &options[0];
+    assert!(first.get("existence").is_some());
+    assert!(first.get("binding").is_some());
 }
