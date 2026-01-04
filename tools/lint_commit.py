@@ -89,6 +89,21 @@ def _validate_bullet_section(
     return None
 
 
+def _validate_subject(subject: str) -> str | None:
+    if ": " not in subject:
+        return "subject must use 'component: message' format"
+    component, message = subject.split(": ", 1)
+    if not component:
+        return "subject must include a non-empty component"
+    if any(ch.isspace() for ch in component):
+        return "subject component must not contain whitespace"
+    if not message.strip():
+        return "subject must include a non-empty message"
+    if message[0].isspace():
+        return "subject must use a single space after ':'"
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -114,6 +129,9 @@ def lint_message(text: str) -> int:
     subject = lines[0]
     if not subject.strip():
         return fail("subject line must not be empty")
+    subject_error = _validate_subject(subject.strip())
+    if subject_error:
+        return fail(subject_error)
 
     if len(lines) < 3 or lines[1] != "":
         return fail("expected blank line after subject")

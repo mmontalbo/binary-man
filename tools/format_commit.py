@@ -2,7 +2,7 @@
 """Format a commit message that follows the project template.
 
 Usage:
-    python tools/format_commit.py "subject line" \
+    python tools/format_commit.py "component: message" \
         --context "why this commit exists" \
         --enable "capability enabled" \
         --change "path: what + why" \
@@ -32,7 +32,7 @@ MAX_CONTEXT_LINES = 8
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("subject", help="commit subject line")
+    parser.add_argument("subject", help="commit subject line (component: message)")
     parser.add_argument(
         "--context",
         action="append",
@@ -182,6 +182,20 @@ def _validate_path(root: Path, path: str) -> None:
             raise ValueError(f"change label path does not exist: {path}")
 
 
+def _validate_subject(subject: str) -> None:
+    if ": " not in subject:
+        raise ValueError("subject must use 'component: message' format")
+    component, message = subject.split(": ", 1)
+    if not component:
+        raise ValueError("subject must include a non-empty component")
+    if any(ch.isspace() for ch in component):
+        raise ValueError("subject component must not contain whitespace")
+    if not message.strip():
+        raise ValueError("subject must include a non-empty message")
+    if message[0].isspace():
+        raise ValueError("subject must use a single space after ':'")
+
+
 def format_message(
     subject: str,
     context: list[str],
@@ -193,6 +207,7 @@ def format_message(
     subject = subject.strip()
     if not subject:
         raise ValueError("subject must not be empty")
+    _validate_subject(subject)
 
     if not context:
         raise ValueError("at least one --context entry is required")
