@@ -31,3 +31,11 @@ cargo run -- /path/to/bin --out-dir ./out
 ```
 
 The help artifact is written under `out/context/<binary-name>/help.txt`.
+
+Additional artifacts:
+
+```
+out/context/<binary-name>/help.stdout.txt
+out/context/<binary-name>/help.stderr.txt
+out/context/<binary-name>/context.json
+```

@@ -2,8 +2,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_OUT_DIR: &str = "out";
 
@@ -24,14 +26,38 @@ struct CaptureOutput {
     stderr: String,
 }
 
+struct HelpCapture {
+    arg: String,
+    output: CaptureOutput,
+}
+
+#[derive(Serialize)]
+struct EnvContract {
+    lc_all: String,
+    tz: String,
+    term: String,
+}
+
+#[derive(Serialize)]
+struct ContextMetadata {
+    binary_path: String,
+    binary_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_hash: Option<String>,
+    help_arg_used: String,
+    exit_code: Option<i32>,
+    env: EnvContract,
+    timestamp: u64,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
     let capture = capture_help(&args.binary)?;
-    let help_text = select_help_text(&capture).ok_or_else(|| {
+    let help_text = select_help_text(&capture.output).ok_or_else(|| {
         anyhow!(
             "help capture produced no output: exit={:?}",
-            capture.exit_code
+            capture.output.exit_code
         )
     })?;
 
@@ -43,24 +69,62 @@ fn main() -> Result<()> {
     let out_dir = args.out_dir.join("context").join(name);
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("create output dir {}", out_dir.display()))?;
-    let out_path = out_dir.join("help.txt");
-    std::fs::write(&out_path, help_text)
-        .with_context(|| format!("write help text {}", out_path.display()))?;
+    let help_path = out_dir.join("help.txt");
+    let stdout_path = out_dir.join("help.stdout.txt");
+    let stderr_path = out_dir.join("help.stderr.txt");
+    let context_path = out_dir.join("context.json");
 
-    println!("help: {}", out_path.display());
+    std::fs::write(&stdout_path, &capture.output.stdout)
+        .with_context(|| format!("write stdout {}", stdout_path.display()))?;
+    std::fs::write(&stderr_path, &capture.output.stderr)
+        .with_context(|| format!("write stderr {}", stderr_path.display()))?;
+    std::fs::write(&help_path, help_text)
+        .with_context(|| format!("write help text {}", help_path.display()))?;
+
+    let metadata = ContextMetadata {
+        binary_path: args.binary.display().to_string(),
+        binary_name: name.to_string(),
+        binary_hash: None,
+        help_arg_used: capture.arg,
+        exit_code: capture.output.exit_code,
+        env: EnvContract {
+            lc_all: "C".to_string(),
+            tz: "UTC".to_string(),
+            term: "dumb".to_string(),
+        },
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+    let metadata_json =
+        serde_json::to_string_pretty(&metadata).context("serialize context metadata")?;
+    std::fs::write(&context_path, metadata_json)
+        .with_context(|| format!("write context metadata {}", context_path.display()))?;
+
+    println!("help: {}", help_path.display());
     Ok(())
 }
 
-fn capture_help(binary: &Path) -> Result<CaptureOutput> {
+fn capture_help(binary: &Path) -> Result<HelpCapture> {
     let primary = capture_output(binary, &["--help"])?;
     if select_help_text(&primary).is_some() {
-        return Ok(primary);
+        return Ok(HelpCapture {
+            arg: "--help".to_string(),
+            output: primary,
+        });
     }
     let fallback = capture_output(binary, &["-h"])?;
     if select_help_text(&fallback).is_some() {
-        return Ok(fallback);
+        return Ok(HelpCapture {
+            arg: "-h".to_string(),
+            output: fallback,
+        });
     }
-    Ok(primary)
+    Ok(HelpCapture {
+        arg: "--help".to_string(),
+        output: primary,
+    })
 }
 
 fn select_help_text(capture: &CaptureOutput) -> Option<&str> {
