@@ -16,12 +16,15 @@ pub(crate) const MAX_FILE_SIZE_KB: u64 = 10_240;
 pub(crate) const MAX_ARGS: usize = 256;
 /// Maximum length of a single arg accepted by the runner.
 pub(crate) const MAX_ARG_LEN: usize = 4096;
+/// Maximum length of the rationale field.
+pub(crate) const MAX_RATIONALE_LEN: usize = 1024;
 
 /// Top-level scenario spec parsed from JSON.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Scenario {
     pub(crate) scenario_id: String,
+    pub(crate) rationale: String,
     pub(crate) binary: ScenarioBinary,
     pub(crate) args: Vec<String>,
     pub(crate) fixture: ScenarioFixture,
@@ -67,6 +70,17 @@ pub(crate) fn validate_scenario(scenario: &Scenario) -> Option<Vec<String>> {
     let mut errors = Vec::new();
     if scenario.scenario_id.trim().is_empty() {
         errors.push("scenario_id is required".to_string());
+    }
+    if scenario.rationale.trim().is_empty() {
+        errors.push("rationale is required".to_string());
+    }
+    if scenario.rationale.len() > MAX_RATIONALE_LEN {
+        errors.push(format!(
+            "rationale exceeds max length ({MAX_RATIONALE_LEN})"
+        ));
+    }
+    if scenario.rationale.contains('\0') {
+        errors.push("rationale contains NUL".to_string());
     }
     if scenario.binary.path.trim().is_empty() {
         errors.push("binary.path is required".to_string());

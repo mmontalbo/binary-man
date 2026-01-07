@@ -22,6 +22,14 @@ pub(crate) struct FixtureManifest {
     pub(crate) entries: Vec<FixtureEntry>,
 }
 
+/// Catalog entry describing an available fixture.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FixtureCatalogEntry {
+    pub(crate) id: String,
+    pub(crate) description: String,
+}
+
 /// A single fixture entry describing a file or directory.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +69,46 @@ enum EntryKind {
 pub(crate) fn fixture_root(root: &Path, fixture_id: &str) -> Result<PathBuf> {
     validate_relative_path(fixture_id)?;
     Ok(root.join(fixture_id))
+}
+
+/// Load the fixture catalog and return the allowed fixture IDs.
+pub(crate) fn load_fixture_catalog(fixtures_root: &Path) -> Result<HashSet<String>> {
+    let catalog_path = fixtures_root.join("catalog.json");
+    let bytes = fs::read(&catalog_path)
+        .with_context(|| format!("read fixture catalog {}", catalog_path.display()))?;
+    let entries: Vec<FixtureCatalogEntry> = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse fixture catalog {}", catalog_path.display()))?;
+
+    let mut ids = HashSet::new();
+    for entry in entries {
+        validate_relative_path(&entry.id)
+            .with_context(|| format!("fixture catalog id {}", entry.id))?;
+        if entry.description.trim().is_empty() {
+            return Err(anyhow!(
+                "fixture catalog entry {} missing description",
+                entry.id
+            ));
+        }
+        if !ids.insert(entry.id.clone()) {
+            return Err(anyhow!("duplicate fixture catalog entry {}", entry.id));
+        }
+        let fixture_dir = fixtures_root.join(&entry.id);
+        if !fixture_dir.is_dir() {
+            return Err(anyhow!(
+                "fixture catalog entry not found on disk: {}",
+                fixture_dir.display()
+            ));
+        }
+        let manifest_path = fixture_dir.join("manifest.json");
+        let tree_path = fixture_dir.join("tree");
+        if !manifest_path.is_file() || !tree_path.is_dir() {
+            return Err(anyhow!(
+                "fixture catalog entry missing manifest.json or tree/: {}",
+                entry.id
+            ));
+        }
+    }
+    Ok(ids)
 }
 
 /// Verify and materialize a fixture into a temporary run root.
@@ -136,6 +184,26 @@ pub(crate) fn prepare_fixture(fixture_dir: &Path) -> Result<PreparedFixture, Fix
         fixture_root,
         fixture_hash,
     })
+}
+
+/// Validate a fixture on disk without materializing it.
+pub(crate) fn validate_fixture(fixture_dir: &Path) -> Result<String> {
+    if !fixture_dir.exists() {
+        return Err(anyhow!(
+            "fixture not found: {}",
+            fixture_dir.display()
+        ));
+    }
+    let manifest_path = fixture_dir.join("manifest.json");
+    let tree_path = fixture_dir.join("tree");
+    if !manifest_path.exists() || !tree_path.exists() {
+        return Err(anyhow!("fixture missing manifest.json or tree/"));
+    }
+
+    let manifest = load_manifest(&manifest_path).context("load fixture manifest")?;
+    validate_manifest(&manifest).context("validate fixture manifest")?;
+    verify_fixture_tree(&tree_path, &manifest, false).context("verify fixture tree")?;
+    canonical_manifest_hash(&manifest).context("hash fixture manifest")
 }
 
 fn load_manifest(path: &Path) -> Result<FixtureManifest> {

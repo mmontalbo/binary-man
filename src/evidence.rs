@@ -10,7 +10,7 @@ use crate::contract::EnvContract;
 use crate::scenario::ScenarioLimits;
 
 /// Tool version emitted in evidence metadata.
-pub(crate) const TOOL_VERSION: &str = "m6.0";
+pub(crate) const TOOL_VERSION: &str = "0.7.0";
 
 /// Top-level metadata file written for each run.
 #[derive(Serialize)]
@@ -103,18 +103,62 @@ pub(crate) enum Outcome {
 pub(crate) const EVIDENCE_DIR: &str = "evidence";
 
 /// Create a unique evidence directory for this run.
-pub(crate) fn create_evidence_dir(out_dir: &Path, scenario_hash: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn create_evidence_dir(
+    out_dir: &Path,
+    scenario_hash: Option<&str>,
+    label: Option<&str>,
+) -> Result<PathBuf> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let run_id = match scenario_hash {
-        Some(hash) => format!("{hash}-{ts}"),
-        None => format!("unknown-{ts}"),
-    };
+    let label = label.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let label = label.map(sanitize_label).unwrap_or_else(|| "run".to_string());
+    let hash = scenario_hash.unwrap_or("unknown");
+    let short_hash = if hash.len() > 12 { &hash[..12] } else { hash };
+    let run_id = format!("{label}-{short_hash}-{ts}");
     let path = out_dir.join(EVIDENCE_DIR).join(run_id);
     fs::create_dir_all(&path).context("create evidence dir")?;
     Ok(path)
+}
+
+fn sanitize_label(label: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_sep = false;
+    for ch in label.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if last_sep {
+                continue;
+            }
+            last_sep = true;
+        } else {
+            last_sep = false;
+        }
+        sanitized.push(mapped);
+        if sanitized.len() >= 32 {
+            break;
+        }
+    }
+    while sanitized.ends_with('_') {
+        sanitized.pop();
+    }
+    if sanitized.is_empty() {
+        "run".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Serialize and write `meta.json` into the evidence directory.

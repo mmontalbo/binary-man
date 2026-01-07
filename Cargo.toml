@@ -16,3 +16,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.10"
 walkdir = "2.5"
+
+[[bin]]
+name = "bman"
+path = "src/main.rs"
