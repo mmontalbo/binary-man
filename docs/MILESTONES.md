@@ -3,7 +3,7 @@
 This document records the current milestone plan and status. It is the canonical
 sequence for the project.
 
-Current focus: M6 — Scenario Runner (done, v0).
+Current focus: M8 — Iterative T0 Discovery (proposed).
 
 ## M0 — Scaffold & Invariants (done)
 
@@ -124,7 +124,7 @@ Explicit non-goals:
 - No rendering beyond raw help text
 - No documentation synthesis
 
-## M6 — Scenario Runner (done, v0)
+## M6 — Scenario Runner (done)
 
 Purpose:
 - Deliver a constrained, recordable runner that executes LM-suggested scenarios safely.
@@ -140,3 +140,48 @@ What landed:
 Explicitly not done:
 - Syscall tracing (deferred in v0).
 - Multi-command scenarios, retries, or semantic inference.
+
+## M7 — LM Scenario Proposal Interface (done)
+
+Purpose:
+- Enable a minimal LM interface that proposes scenario JSON for execution without adding semantics.
+
+What landed:
+- Canonical scenario schema file aligned with runtime validation.
+- Fixture catalog to constrain LM proposals to known fixtures.
+- Example `ls` scenario JSON for prompt anchoring.
+- Dry-run validation path that emits evidence without execution.
+- Embedded LM CLI invocation for mandatory LM-generated scenarios (Claude as default).
+- LM prompt + response provenance capture (raw bytes) alongside evidence.
+
+Out of scope:
+- Multi-scenario orchestration or planner loops.
+- Fixture generation or mutation.
+- Semantic expectations/assertions.
+
+## M8 — Iterative T0 Discovery (proposed)
+
+Purpose:
+- Allow the LM to iterate on option-existence probing while keeping the runner strictly scoped to Tier-0.
+
+Scope (v0, ls/coreutils only):
+- LM outputs a constrained probe list of option tokens only (no values, no multi-arg semantics).
+- The tool maps probes to a fixed scenario template and executes one probe per run.
+- Classification rules for Tier-0 only:
+  - "unknown option" -> refuted
+  - "requires an argument" -> confirmed
+  - otherwise -> undetermined
+- Maintain a tested-options ledger to prevent repeats and stop when no new probes remain.
+- Hard caps on rounds and probe counts; no retries or adaptive semantics.
+- Evidence + provenance captured per probe with a strict, fail-closed validation path.
+
+Prerequisites:
+- Define a probe schema (e.g., `schema/probe.v0.json`) distinct from scenarios.
+- Add a runner mode/subcommand that executes probe batches using the fixed template.
+- Implement standardized output classification for Tier-0.
+- Document the probe contract, failure modes, and stop conditions.
+
+Out of scope:
+- Tier-1 parameter binding or value inference.
+- Semantic assertions or behavior validation.
+- Fixture generation, mutation, or multi-binary coordination.

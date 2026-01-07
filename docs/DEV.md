@@ -27,7 +27,9 @@ The shell provides the Rust toolchain and bwrap.
 
 ```
 cargo build
-cargo run -- scenario.json
+cargo run --bin bman -- ls
 ```
 
-Evidence is written under `out/evidence/<run_id>/`.
+The configured LM CLI must be authenticated/configured to run. Evidence is written
+under `out/evidence/<run_id>/`, where `<run_id>` is `<label>-<hash12>-<epoch_ms>`
+and `label` is a slugged scenario ID (or an error code for early failures).
